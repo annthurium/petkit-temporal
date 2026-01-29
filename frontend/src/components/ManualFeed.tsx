@@ -7,7 +7,7 @@ interface Props {
 }
 
 export default function ManualFeed({ feederId, onDone }: Props) {
-  const [amount, setAmount] = useState(1);
+  const [amount, setAmount] = useState(5);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -16,7 +16,7 @@ export default function ManualFeed({ feederId, onDone }: Props) {
     setMessage(null);
     try {
       await manualFeed(feederId, { amount });
-      setMessage(`Fed ${amount} portion(s) successfully`);
+      setMessage(`Fed ${amount}g successfully`);
       onDone();
     } catch {
       setMessage('Failed to feed');
@@ -43,18 +43,19 @@ export default function ManualFeed({ feederId, onDone }: Props) {
     <div className="space-y-4">
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-2">
-          Amount (portions)
+          Amount (grams, in multiples of 5)
         </label>
         <div className="flex items-center gap-3">
           <input
             type="range"
-            min={1}
-            max={10}
+            min={5}
+            max={50}
+            step={5}
             value={amount}
             onChange={e => setAmount(Number(e.target.value))}
             className="flex-1"
           />
-          <span className="text-lg font-semibold w-8 text-center">{amount}</span>
+          <span className="text-lg font-semibold w-12 text-center">{amount}g</span>
         </div>
       </div>
       <div className="flex gap-3">
