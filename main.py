@@ -1,10 +1,13 @@
 import asyncio
 import logging
 import aiohttp
-from pypetkitapi.client import PetKitClient
-from pypetkitapi.command import DeviceCommand, FeederCommand, LBCommand, DeviceAction, LitterCommand
 from dotenv import load_dotenv
 import os
+import pprint
+
+from pypetkitapi.client import PetKitClient
+from pypetkitapi.command import DeviceCommand, FeederCommand, LBCommand, DeviceAction, LitterCommand
+
 
 load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
@@ -15,7 +18,7 @@ async def main():
             username="tilde@thuryism.net",  # Your PetKit account username or id
             password=os.getenv("PETKIT_PASSWORD"),  # Your PetKit account password
             region="US",  # Your region or country code (e.g. FR, US,CN etc.)
-            timezone="Europe/Paris",  # Your timezone(e.g. "Asia/Shanghai")
+            timezone="America/Los_Angeles",  # Your timezone(e.g. "Asia/Shanghai")
             session=session,
         )
 
@@ -29,7 +32,7 @@ async def main():
         # Select a device
         device_id = key
         # Read devices or pet information
-        print(client.petkit_entities[device_id])
+        pprint.pprint(vars(client.petkit_entities[device_id]))
 
         # # Send command to the devices
         # ### Example 1 : Turn on the indicator light
