@@ -28,7 +28,7 @@ const CAPABILITIES: Record<string, Partial<DeviceCapabilities>> = {
     surplusControl: true,
   },
   d4: {
-    weightSensor: true,
+    weightSensor: false,
   },
   d4s: {
     dualBowl: true,

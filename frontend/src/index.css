@@ -1,1 +1,92 @@
 @import "tailwindcss";
+
+@theme {
+  --color-vapor-dark: #0a0015;
+  --color-vapor-deeper: #120025;
+  --color-vapor-panel: rgba(20, 0, 50, 0.6);
+  --color-vapor-card: rgba(30, 5, 60, 0.5);
+  --color-neon-pink: #ff2afc;
+  --color-neon-cyan: #00f0ff;
+  --color-neon-purple: #b026ff;
+  --color-neon-magenta: #ff00aa;
+  --color-vapor-text: #e0d0ff;
+  --color-vapor-muted: #9080b0;
+  --color-vapor-success: #00ff9f;
+  --color-vapor-danger: #ff3366;
+}
+
+body {
+  background: linear-gradient(180deg, #0a0015 0%, #1a0030 40%, #0d0020 100%);
+  min-height: 100vh;
+}
+
+/* Neon glow utility */
+.neon-glow-pink {
+  box-shadow: 0 0 10px rgba(255, 42, 252, 0.3), 0 0 30px rgba(255, 42, 252, 0.15);
+}
+.neon-glow-cyan {
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.3), 0 0 30px rgba(0, 240, 255, 0.15);
+}
+.neon-glow-purple {
+  box-shadow: 0 0 10px rgba(176, 38, 255, 0.3), 0 0 30px rgba(176, 38, 255, 0.15);
+}
+
+/* Glass panel */
+.glass-panel {
+  background: rgba(20, 0, 50, 0.6);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(176, 38, 255, 0.25);
+}
+
+/* Neon text glow */
+.text-glow-pink {
+  text-shadow: 0 0 8px rgba(255, 42, 252, 0.6), 0 0 20px rgba(255, 42, 252, 0.3);
+}
+.text-glow-cyan {
+  text-shadow: 0 0 8px rgba(0, 240, 255, 0.6), 0 0 20px rgba(0, 240, 255, 0.3);
+}
+
+/* Vaporwave range slider */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #b026ff, #ff2afc, #00f0ff);
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ff2afc;
+  box-shadow: 0 0 8px rgba(255, 42, 252, 0.6), 0 0 20px rgba(255, 42, 252, 0.3);
+  cursor: pointer;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ff2afc;
+  box-shadow: 0 0 8px rgba(255, 42, 252, 0.6), 0 0 20px rgba(255, 42, 252, 0.3);
+  border: none;
+  cursor: pointer;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(10, 0, 21, 0.5);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(176, 38, 255, 0.4);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(176, 38, 255, 0.6);
+}

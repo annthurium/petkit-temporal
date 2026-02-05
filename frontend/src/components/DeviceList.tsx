@@ -15,27 +15,14 @@ export default function DeviceList({ feeders, selected, onSelect }: Props) {
           <button
             key={f.id}
             onClick={() => onSelect(f.id)}
-            className={`text-left p-4 rounded-lg border-2 transition-colors ${
+            className={`text-left p-4 rounded-lg border transition-all duration-300 ${
               isSelected
-                ? 'border-blue-500 bg-blue-50'
-                : 'border-gray-200 bg-white hover:border-gray-300'
+                ? 'border-neon-pink neon-glow-pink bg-neon-pink/10'
+                : 'border-neon-purple/30 bg-vapor-card hover:border-neon-cyan/50 hover:neon-glow-cyan'
             }`}
           >
-            <h3 className="font-semibold text-lg">{f.name || `Feeder ${f.id}`}</h3>
-            <p className="text-sm text-gray-500 capitalize">{f.type}</p>
-            <div className="mt-2 flex gap-4 text-sm">
-              {f.state?.food != null && (
-                <span>Food: {f.state.food}%</span>
-              )}
-              {f.state?.battery_power != null && (
-                <span>Battery: {f.state.battery_power}%</span>
-              )}
-              {f.state?.online != null && (
-                <span className={f.state.online ? 'text-green-600' : 'text-red-500'}>
-                  {f.state.online ? 'Online' : 'Offline'}
-                </span>
-              )}
-            </div>
+            <h3 className="font-semibold text-lg text-neon-cyan">Name: {f.name || `Feeder ${f.id}`}</h3>
+            <p className="text-sm text-vapor-muted capitalize">Feeder Model: {f.type}</p>
           </button>
         );
       })}

@@ -38,17 +38,17 @@ export default function FeederDashboard({ feeder, onRefresh }: Props) {
   const caps = getCapabilities(feeder.type);
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200">
-      <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+    <div className="glass-panel rounded-lg">
+      <div className="flex items-center justify-between border-b border-neon-purple/20 px-4 py-3">
         <div className="flex gap-1">
           {tabs.map(t => (
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
-              className={`px-4 py-2 text-sm rounded-md font-medium transition-colors ${
+              className={`px-4 py-2 text-sm rounded-md font-medium transition-all duration-300 ${
                 tab === t.key
-                  ? 'bg-blue-100 text-blue-700'
-                  : 'text-gray-600 hover:bg-gray-100'
+                  ? 'bg-neon-pink/20 text-neon-pink neon-glow-pink'
+                  : 'text-vapor-muted hover:text-neon-cyan hover:bg-neon-cyan/10'
               }`}
             >
               {t.label}
@@ -58,7 +58,7 @@ export default function FeederDashboard({ feeder, onRefresh }: Props) {
         <button
           onClick={handleRefresh}
           disabled={refreshing}
-          className="text-sm px-3 py-1.5 rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+          className="text-sm px-3 py-1.5 rounded border border-neon-cyan/40 text-neon-cyan hover:bg-neon-cyan/10 hover:neon-glow-cyan disabled:opacity-50 transition-all duration-300"
         >
           {refreshing ? 'Refreshing...' : 'Refresh'}
         </button>
@@ -87,7 +87,7 @@ export default function FeederDashboard({ feeder, onRefresh }: Props) {
             )}
             <StatusCard label="Online" value={s?.online ? 'Yes' : 'No'} />
             {s?.error_msg && (
-              <div className="col-span-full p-3 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+              <div className="col-span-full p-3 bg-vapor-danger/10 border border-vapor-danger/30 rounded text-vapor-danger text-sm">
                 Error: {s.error_msg} (code: {s.error_code})
               </div>
             )}
@@ -115,9 +115,9 @@ export default function FeederDashboard({ feeder, onRefresh }: Props) {
 
 function StatusCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="p-3 bg-gray-50 rounded-lg">
-      <p className="text-xs text-gray-500 mb-1">{label}</p>
-      <p className="text-lg font-semibold">{value}</p>
+    <div className="p-3 rounded-lg bg-neon-purple/10 border border-neon-purple/20">
+      <p className="text-xs text-vapor-muted mb-1">{label}</p>
+      <p className="text-lg font-semibold text-neon-cyan text-glow-cyan">{value}</p>
     </div>
   );
 }

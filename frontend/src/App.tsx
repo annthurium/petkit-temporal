@@ -30,15 +30,17 @@ function App() {
   const selectedFeeder = feeders.find(f => f.id === selected) ?? null;
 
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900">
-      <header className="bg-white border-b border-gray-200 px-6 py-4">
-        <h1 className="text-2xl font-bold">PetKit Feeder Control</h1>
+    <div className="min-h-screen text-vapor-text">
+      <header className="glass-panel px-6 py-4 border-b border-neon-purple/30">
+        <h1 className="text-2xl font-bold text-neon-pink text-glow-pink tracking-wider">
+          Cyber Pet Feeder Control Panel
+        </h1>
       </header>
       <main className="max-w-5xl mx-auto p-6">
-        {loading && <p className="text-gray-500">Loading feeders...</p>}
-        {error && <p className="text-red-600">{error}</p>}
+        {loading && <p className="text-vapor-muted">Loading feeders...</p>}
+        {error && <p className="text-vapor-danger">{error}</p>}
         {!loading && !error && feeders.length === 0 && (
-          <p className="text-gray-500">No feeders found on your account.</p>
+          <p className="text-vapor-muted">No feeders found on your account.</p>
         )}
         {!loading && feeders.length > 0 && (
           <>
