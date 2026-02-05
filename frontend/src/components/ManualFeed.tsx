@@ -42,7 +42,7 @@ export default function ManualFeed({ feederId, onDone }: Props) {
   return (
     <div className="space-y-4">
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">
+        <label className="block text-sm font-medium text-vapor-muted mb-2">
           Amount (grams, in multiples of 5)
         </label>
         <div className="flex items-center gap-3">
@@ -55,27 +55,27 @@ export default function ManualFeed({ feederId, onDone }: Props) {
             onChange={e => setAmount(Number(e.target.value))}
             className="flex-1"
           />
-          <span className="text-lg font-semibold w-12 text-center">{amount}g</span>
+          <span className="text-lg font-semibold w-12 text-center text-neon-cyan text-glow-cyan">{amount}g</span>
         </div>
       </div>
       <div className="flex gap-3">
         <button
           onClick={handleFeed}
           disabled={loading}
-          className="px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50"
+          className="px-6 py-2 bg-neon-pink/20 text-neon-pink border border-neon-pink/40 rounded-lg font-medium hover:bg-neon-pink/30 hover:neon-glow-pink disabled:opacity-50 transition-all duration-300"
         >
           {loading ? 'Sending...' : 'Feed Now'}
         </button>
         <button
           onClick={handleCancel}
           disabled={loading}
-          className="px-6 py-2 bg-red-100 text-red-700 rounded-lg font-medium hover:bg-red-200 disabled:opacity-50"
+          className="px-6 py-2 bg-vapor-danger/10 text-vapor-danger border border-vapor-danger/40 rounded-lg font-medium hover:bg-vapor-danger/20 disabled:opacity-50 transition-all duration-300"
         >
           Cancel Feed
         </button>
       </div>
       {message && (
-        <p className={`text-sm ${message.includes('Failed') ? 'text-red-600' : 'text-green-600'}`}>
+        <p className={`text-sm ${message.includes('Failed') ? 'text-vapor-danger' : 'text-vapor-success'}`}>
           {message}
         </p>
       )}

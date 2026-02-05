@@ -7,6 +7,7 @@ import {
   removeSchedule,
   restoreSchedule,
 } from '../api';
+import { getCapabilities } from '../deviceCapabilities';
 
 interface Props {
   feeder: Feeder;
@@ -17,6 +18,7 @@ export default function FeederSettings({ feeder, onDone }: Props) {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const settings = feeder.settings;
+  const caps = getCapabilities(feeder.type);
 
   const toggle = async (key: string, current: number | null) => {
     setLoading(true);
@@ -51,14 +53,14 @@ export default function FeederSettings({ feeder, onDone }: Props) {
         { key: 'lightMode', label: 'Indicator Light', value: settings.light_mode },
         { key: 'systemSoundEnable', label: 'System Sound', value: settings.system_sound_enable },
         { key: 'feedSound', label: 'Feed Sound', value: settings.feed_sound },
-        { key: 'eatNotify', label: 'Eat Notification', value: settings.eat_notify },
+        ...(caps.eatDetection ? [{ key: 'eatNotify', label: 'Eat Notification', value: settings.eat_notify }] : []),
         { key: 'feedNotify', label: 'Feed Notification', value: settings.feed_notify },
         { key: 'foodNotify', label: 'Food Low Notification', value: settings.food_notify },
         { key: 'foodWarn', label: 'Food Warning', value: settings.food_warn },
-        { key: 'eatDetection', label: 'Eat Detection', value: settings.eat_detection },
-        { key: 'moveDetection', label: 'Move Detection', value: settings.move_detection },
-        { key: 'petDetection', label: 'Pet Detection', value: settings.pet_detection },
-        { key: 'surplusControl', label: 'Surplus Control', value: settings.surplus_control },
+        ...(caps.eatDetection ? [{ key: 'eatDetection', label: 'Eat Detection', value: settings.eat_detection }] : []),
+        ...(caps.moveDetection ? [{ key: 'moveDetection', label: 'Move Detection', value: settings.move_detection }] : []),
+        ...(caps.petDetection ? [{ key: 'petDetection', label: 'Pet Detection', value: settings.pet_detection }] : []),
+        ...(caps.surplusControl ? [{ key: 'surplusControl', label: 'Surplus Control', value: settings.surplus_control }] : []),
       ]
     : [];
 
@@ -66,24 +68,28 @@ export default function FeederSettings({ feeder, onDone }: Props) {
     <div className="space-y-6">
       {settings && (
         <div>
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">Toggle Settings</h3>
+          <h3 className="text-sm font-semibold text-neon-purple mb-3">Toggle Settings</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {toggleItems.map(item => (
               <div
                 key={item.key}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+                className="flex items-center justify-between p-3 rounded-lg bg-neon-purple/10 border border-neon-purple/20"
               >
-                <span className="text-sm">{item.label}</span>
+                <span className="text-sm text-vapor-text">{item.label}</span>
                 <button
                   onClick={() => toggle(item.key, item.value)}
                   disabled={loading}
-                  className={`relative w-11 h-6 rounded-full transition-colors ${
-                    item.value ? 'bg-blue-600' : 'bg-gray-300'
+                  className={`relative w-11 h-6 rounded-full transition-all duration-300 ${
+                    item.value
+                      ? 'bg-neon-pink neon-glow-pink'
+                      : 'bg-vapor-muted/30'
                   }`}
                 >
                   <span
-                    className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
-                      item.value ? 'translate-x-5' : ''
+                    className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform duration-300 ${
+                      item.value
+                        ? 'translate-x-5 bg-white'
+                        : 'bg-vapor-muted'
                     }`}
                   />
                 </button>
@@ -91,8 +97,8 @@ export default function FeederSettings({ feeder, onDone }: Props) {
             ))}
           </div>
           {settings.volume != null && (
-            <div className="mt-4 p-3 bg-gray-50 rounded-lg">
-              <label className="text-sm block mb-2">Volume: {settings.volume}</label>
+            <div className="mt-4 p-3 rounded-lg bg-neon-purple/10 border border-neon-purple/20">
+              <label className="text-sm block mb-2 text-vapor-text">Volume: {settings.volume}</label>
               <input
                 type="range"
                 min={0}
@@ -115,22 +121,24 @@ export default function FeederSettings({ feeder, onDone }: Props) {
       )}
 
       <div>
-        <h3 className="text-sm font-semibold text-gray-700 mb-3">Actions</h3>
+        <h3 className="text-sm font-semibold text-neon-purple mb-3">Actions</h3>
         <div className="flex flex-wrap gap-3">
           <ActionButton
             label="Reset Desiccant"
             disabled={loading}
             onClick={() => action('Reset desiccant', () => resetDesiccant(feeder.id))}
           />
-          <ActionButton
-            label="Food Replenished"
-            disabled={loading}
-            onClick={() => action('Food replenished', () => foodReplenished(feeder.id))}
-          />
+          {caps.foodReplenished && (
+            <ActionButton
+              label="Food Replenished"
+              disabled={loading}
+              onClick={() => action('Food replenished', () => foodReplenished(feeder.id))}
+            />
+          )}
           <ActionButton
             label="Remove Schedule"
             disabled={loading}
-            className="text-red-700 bg-red-50 hover:bg-red-100"
+            className="text-vapor-danger border-vapor-danger/40 hover:bg-vapor-danger/10"
             onClick={() => action('Remove schedule', () => removeSchedule(feeder.id))}
           />
           <ActionButton
@@ -142,7 +150,7 @@ export default function FeederSettings({ feeder, onDone }: Props) {
       </div>
 
       {message && (
-        <p className={`text-sm ${message.includes('failed') ? 'text-red-600' : 'text-green-600'}`}>
+        <p className={`text-sm ${message.includes('failed') ? 'text-vapor-danger' : 'text-vapor-success'}`}>
           {message}
         </p>
       )}
@@ -165,7 +173,7 @@ function ActionButton({
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`px-4 py-2 text-sm rounded-lg border border-gray-300 font-medium hover:bg-gray-100 disabled:opacity-50 ${className}`}
+      className={`px-4 py-2 text-sm rounded-lg border border-neon-cyan/40 font-medium text-neon-cyan hover:bg-neon-cyan/10 hover:neon-glow-cyan disabled:opacity-50 transition-all duration-300 ${className}`}
     >
       {label}
     </button>
