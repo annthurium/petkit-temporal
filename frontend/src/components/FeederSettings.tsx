@@ -7,6 +7,7 @@ import {
   removeSchedule,
   restoreSchedule,
 } from '../api';
+import { getCapabilities } from '../deviceCapabilities';
 
 interface Props {
   feeder: Feeder;
@@ -17,6 +18,7 @@ export default function FeederSettings({ feeder, onDone }: Props) {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const settings = feeder.settings;
+  const caps = getCapabilities(feeder.type);
 
   const toggle = async (key: string, current: number | null) => {
     setLoading(true);
@@ -51,14 +53,14 @@ export default function FeederSettings({ feeder, onDone }: Props) {
         { key: 'lightMode', label: 'Indicator Light', value: settings.light_mode },
         { key: 'systemSoundEnable', label: 'System Sound', value: settings.system_sound_enable },
         { key: 'feedSound', label: 'Feed Sound', value: settings.feed_sound },
-        { key: 'eatNotify', label: 'Eat Notification', value: settings.eat_notify },
+        ...(caps.eatDetection ? [{ key: 'eatNotify', label: 'Eat Notification', value: settings.eat_notify }] : []),
         { key: 'feedNotify', label: 'Feed Notification', value: settings.feed_notify },
         { key: 'foodNotify', label: 'Food Low Notification', value: settings.food_notify },
         { key: 'foodWarn', label: 'Food Warning', value: settings.food_warn },
-        { key: 'eatDetection', label: 'Eat Detection', value: settings.eat_detection },
-        { key: 'moveDetection', label: 'Move Detection', value: settings.move_detection },
-        { key: 'petDetection', label: 'Pet Detection', value: settings.pet_detection },
-        { key: 'surplusControl', label: 'Surplus Control', value: settings.surplus_control },
+        ...(caps.eatDetection ? [{ key: 'eatDetection', label: 'Eat Detection', value: settings.eat_detection }] : []),
+        ...(caps.moveDetection ? [{ key: 'moveDetection', label: 'Move Detection', value: settings.move_detection }] : []),
+        ...(caps.petDetection ? [{ key: 'petDetection', label: 'Pet Detection', value: settings.pet_detection }] : []),
+        ...(caps.surplusControl ? [{ key: 'surplusControl', label: 'Surplus Control', value: settings.surplus_control }] : []),
       ]
     : [];
 
@@ -122,11 +124,13 @@ export default function FeederSettings({ feeder, onDone }: Props) {
             disabled={loading}
             onClick={() => action('Reset desiccant', () => resetDesiccant(feeder.id))}
           />
-          <ActionButton
-            label="Food Replenished"
-            disabled={loading}
-            onClick={() => action('Food replenished', () => foodReplenished(feeder.id))}
-          />
+          {caps.foodReplenished && (
+            <ActionButton
+              label="Food Replenished"
+              disabled={loading}
+              onClick={() => action('Food replenished', () => foodReplenished(feeder.id))}
+            />
+          )}
           <ActionButton
             label="Remove Schedule"
             disabled={loading}

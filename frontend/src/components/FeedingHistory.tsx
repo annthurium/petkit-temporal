@@ -3,9 +3,10 @@ import { fetchRecords, type FeederRecords } from '../api';
 
 interface Props {
   feederId: number;
+  hasEatDetection: boolean;
 }
 
-export default function FeedingHistory({ feederId }: Props) {
+export default function FeedingHistory({ feederId, hasEatDetection }: Props) {
   const [records, setRecords] = useState<FeederRecords | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'eat' | 'feed'>('feed');
@@ -31,12 +32,14 @@ export default function FeedingHistory({ feederId }: Props) {
         >
           Feed Events
         </button>
-        <button
-          onClick={() => setTab('eat')}
-          className={`px-3 py-1 text-sm rounded ${tab === 'eat' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
-        >
-          Eat Events
-        </button>
+        {hasEatDetection && (
+          <button
+            onClick={() => setTab('eat')}
+            className={`px-3 py-1 text-sm rounded ${tab === 'eat' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
+          >
+            Eat Events
+          </button>
+        )}
       </div>
       {items.length === 0 ? (
         <p className="text-gray-500 text-sm">No {tab} events recorded.</p>
