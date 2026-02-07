@@ -78,3 +78,14 @@ export const foodReplenished = (id: number) => api.post(`/feeders/${id}/food-rep
 export const removeSchedule = (id: number) => api.post(`/feeders/${id}/schedule/remove`).then(r => r.data);
 export const restoreSchedule = (id: number) => api.post(`/feeders/${id}/schedule/restore`).then(r => r.data);
 export const refreshFeeder = (id: number) => api.post<Feeder>(`/feeders/${id}/refresh`).then(r => r.data);
+
+export interface FeedSchedule {
+  time: string;
+  amount: number;
+  skip_next: boolean;
+}
+
+export const fetchSchedule = (id: number) => api.get<FeedSchedule | null>(`/feeders/${id}/schedule`).then(r => r.data);
+export const setSchedule = (id: number, payload: { time: string; amount: number }) =>
+  api.put<FeedSchedule>(`/feeders/${id}/schedule`, payload).then(r => r.data);
+export const deleteSchedule = (id: number) => api.delete(`/feeders/${id}/schedule`).then(r => r.data);

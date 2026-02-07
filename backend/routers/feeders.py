@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from pypetkitapi.command import DeviceCommand, FeederCommand
 
 from backend.client import get_client, refresh_data, get_feeders
+from backend.scheduler import load_schedules, save_schedules, mark_skip
 
 router = APIRouter(prefix="/api/feeders", tags=["feeders"])
 
@@ -145,6 +146,7 @@ async def manual_feed(device_id: int, req: ManualFeedRequest):
         raise HTTPException(400, "Must provide amount, amount1, or amount2")
 
     await client.send_api_request(device_id, FeederCommand.MANUAL_FEED, payload)
+    mark_skip(device_id)
     return {"status": "ok"}
 
 
@@ -219,3 +221,46 @@ async def refresh_feeder(device_id: int):
     if device_id not in feeders:
         raise HTTPException(404, "Feeder not found")
     return _serialize_feeder(feeders[device_id])
+
+
+class ScheduleRequest(BaseModel):
+    time: str  # HH:MM
+    amount: int
+
+
+@router.get("/{device_id}/schedule")
+async def get_schedule(device_id: int):
+    client = await get_client()
+    feeders = get_feeders(client)
+    if device_id not in feeders:
+        raise HTTPException(404, "Feeder not found")
+    schedules = load_schedules()
+    return schedules.get(str(device_id))
+
+
+@router.put("/{device_id}/schedule")
+async def set_schedule(device_id: int, req: ScheduleRequest):
+    client = await get_client()
+    feeders = get_feeders(client)
+    if device_id not in feeders:
+        raise HTTPException(404, "Feeder not found")
+    schedules = load_schedules()
+    schedules[str(device_id)] = {
+        "time": req.time,
+        "amount": req.amount,
+        "skip_next": False,
+    }
+    save_schedules(schedules)
+    return schedules[str(device_id)]
+
+
+@router.delete("/{device_id}/schedule")
+async def delete_schedule(device_id: int):
+    client = await get_client()
+    feeders = get_feeders(client)
+    if device_id not in feeders:
+        raise HTTPException(404, "Feeder not found")
+    schedules = load_schedules()
+    schedules.pop(str(device_id), None)
+    save_schedules(schedules)
+    return {"status": "ok"}

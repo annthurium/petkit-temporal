@@ -4,11 +4,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.client import shutdown
 from backend.routers.feeders import router as feeders_router
+from backend.scheduler import start_scheduler, stop_scheduler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    start_scheduler()
     yield
+    await stop_scheduler()
     await shutdown()
 
 
