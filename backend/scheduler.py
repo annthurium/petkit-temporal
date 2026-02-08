@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 SCHEDULES_FILE = Path(__file__).parent / "schedules.json"
 
 _task: asyncio.Task | None = None
-_fed_today: set[int] = set()  # device IDs already fed in the current minute window
+_dispatched_this_minute: set[int] = set()  # device IDs already handled in the current scheduled minute
 
 
 def load_schedules() -> dict[str, dict]:
@@ -37,6 +37,8 @@ def mark_skip(device_id: int) -> None:
 
 
 async def _schedule_loop() -> None:
+    # Polls every 30s. Since a scheduled minute lasts 60s, each schedule will
+    # be seen ~2 times per window. _dispatched_this_minute prevents duplicates.
     tz = ZoneInfo(PETKIT_TIMEZONE)
     while True:
         try:
@@ -47,15 +49,20 @@ async def _schedule_loop() -> None:
             for device_id_str, sched in schedules.items():
                 device_id = int(device_id_str)
 
+                # Not this device's scheduled minute — clear it from the
+                # dedup set so it's eligible again next time its minute arrives.
                 if sched["time"] != current_time:
-                    _fed_today.discard(device_id)
+                    _dispatched_this_minute.discard(device_id)
                     continue
 
-                if device_id in _fed_today:
+                # Already handled during this minute window (fed or skipped).
+                if device_id in _dispatched_this_minute:
                     continue
 
-                _fed_today.add(device_id)
+                _dispatched_this_minute.add(device_id)
 
+                # A manual feed was triggered since the last schedule tick,
+                # so skip this cycle to avoid double-feeding.
                 if sched.get("skip_next"):
                     logger.info("Skipping scheduled feed for device %s (manual feed override)", device_id)
                     schedules[device_id_str]["skip_next"] = False
