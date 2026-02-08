@@ -4,8 +4,6 @@ import {
   updateSettings,
   resetDesiccant,
   foodReplenished,
-  removeSchedule,
-  restoreSchedule,
 } from '../api';
 import { getCapabilities } from '../deviceCapabilities';
 
@@ -135,17 +133,6 @@ export default function FeederSettings({ feeder, onDone }: Props) {
               onClick={() => action('Food replenished', () => foodReplenished(feeder.id))}
             />
           )}
-          <ActionButton
-            label="Remove Schedule"
-            disabled={loading}
-            className="text-vapor-danger border-vapor-danger/40 hover:bg-vapor-danger/10"
-            onClick={() => action('Remove schedule', () => removeSchedule(feeder.id))}
-          />
-          <ActionButton
-            label="Restore Schedule"
-            disabled={loading}
-            onClick={() => action('Restore schedule', () => restoreSchedule(feeder.id))}
-          />
         </div>
       </div>
 

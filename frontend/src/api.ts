@@ -75,6 +75,7 @@ export const updateSettings = (id: number, settings: Record<string, unknown>) =>
   api.post(`/feeders/${id}/settings`, { settings }).then(r => r.data);
 export const resetDesiccant = (id: number) => api.post(`/feeders/${id}/desiccant/reset`).then(r => r.data);
 export const foodReplenished = (id: number) => api.post(`/feeders/${id}/food-replenished`).then(r => r.data);
+// Currently unused in the UI — controls PetKit's built-in device schedule.
 export const removeSchedule = (id: number) => api.post(`/feeders/${id}/schedule/remove`).then(r => r.data);
 export const restoreSchedule = (id: number) => api.post(`/feeders/${id}/schedule/restore`).then(r => r.data);
 export const refreshFeeder = (id: number) => api.post<Feeder>(`/feeders/${id}/refresh`).then(r => r.data);

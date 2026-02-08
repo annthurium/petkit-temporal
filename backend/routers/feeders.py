@@ -245,6 +245,8 @@ async def food_replenished(device_id: int):
     return {"status": "ok"}
 
 
+# Currently unused in the UI — controls PetKit's built-in device schedule,
+# not the custom schedule in schedules.json.
 @router.post("/{device_id}/schedule/remove")
 async def remove_schedule(device_id: int):
     client = await get_client()
@@ -255,6 +257,7 @@ async def remove_schedule(device_id: int):
     return {"status": "ok"}
 
 
+# Currently unused in the UI — see remove_schedule above.
 @router.post("/{device_id}/schedule/restore")
 async def restore_schedule(device_id: int):
     client = await get_client()
