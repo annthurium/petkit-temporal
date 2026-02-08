@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { type Feeder, refreshFeeder } from '../api';
 import { getCapabilities } from '../deviceCapabilities';
 import ManualFeed from './ManualFeed';
+import FeedSchedulePanel from './FeedSchedule';
 import FeedingHistory from './FeedingHistory';
 import FeederSettings from './FeederSettings';
 
@@ -10,17 +11,19 @@ interface Props {
   onRefresh: () => void;
 }
 
-type Tab = 'status' | 'feed' | 'history' | 'settings';
+type Tab = 'status' | 'feed' | 'schedule' | 'history' | 'settings';
 
 export default function FeederDashboard({ feeder, onRefresh }: Props) {
   const [tab, setTab] = useState<Tab>('status');
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
       await refreshFeeder(feeder.id);
       onRefresh();
+      setRefreshKey(k => k + 1);
     } finally {
       setRefreshing(false);
     }
@@ -29,6 +32,7 @@ export default function FeederDashboard({ feeder, onRefresh }: Props) {
   const tabs: { key: Tab; label: string }[] = [
     { key: 'status', label: 'Status' },
     { key: 'feed', label: 'Manual Feed' },
+    { key: 'schedule', label: 'Schedule' },
     { key: 'history', label: 'History' },
     { key: 'settings', label: 'Settings' },
   ];
@@ -106,7 +110,8 @@ export default function FeederDashboard({ feeder, onRefresh }: Props) {
           </div>
         )}
         {tab === 'feed' && <ManualFeed feederId={feeder.id} onDone={onRefresh} />}
-        {tab === 'history' && <FeedingHistory feederId={feeder.id} hasEatDetection={caps.eatDetection} />}
+        {tab === 'schedule' && <FeedSchedulePanel feederId={feeder.id} />}
+        {tab === 'history' && <FeedingHistory key={refreshKey} feederId={feeder.id} hasEatDetection={caps.eatDetection} />}
         {tab === 'settings' && <FeederSettings feeder={feeder} onDone={onRefresh} />}
       </div>
     </div>

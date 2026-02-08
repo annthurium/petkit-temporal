@@ -10,7 +10,8 @@ function App() {
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
-    setLoading(true);
+    const isInitial = feeders.length === 0;
+    if (isInitial) setLoading(true);
     setError(null);
     try {
       const data = await fetchFeeders();
@@ -21,7 +22,7 @@ function App() {
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load feeders');
     } finally {
-      setLoading(false);
+      if (isInitial) setLoading(false);
     }
   };
 

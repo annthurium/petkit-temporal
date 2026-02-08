@@ -75,6 +75,32 @@ input[type="range"]::-moz-range-thumb {
   cursor: pointer;
 }
 
+/* Vaporwave form inputs (time, select) */
+input[type="time"],
+select {
+  color-scheme: dark;
+  background-color: #120025;
+  color: #e0d0ff;
+  border: 1px solid rgba(176, 38, 255, 0.3);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  outline: none;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+input[type="time"]:focus,
+select:focus {
+  border-color: #00f0ff;
+  box-shadow: 0 0 8px rgba(0, 240, 255, 0.3), 0 0 20px rgba(0, 240, 255, 0.1);
+}
+input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.7) sepia(1) saturate(5) hue-rotate(240deg);
+  cursor: pointer;
+}
+select option {
+  background-color: #120025;
+  color: #e0d0ff;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 8px;

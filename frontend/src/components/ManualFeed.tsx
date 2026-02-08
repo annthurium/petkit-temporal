@@ -43,20 +43,16 @@ export default function ManualFeed({ feederId, onDone }: Props) {
     <div className="space-y-4">
       <div>
         <label className="block text-sm font-medium text-vapor-muted mb-2">
-          Amount (grams, in multiples of 5)
+          Amount
         </label>
-        <div className="flex items-center gap-3">
-          <input
-            type="range"
-            min={5}
-            max={50}
-            step={5}
-            value={amount}
-            onChange={e => setAmount(Number(e.target.value))}
-            className="flex-1"
-          />
-          <span className="text-lg font-semibold w-12 text-center text-neon-cyan text-glow-cyan">{amount}g</span>
-        </div>
+        <select
+          value={amount}
+          onChange={e => setAmount(Number(e.target.value))}
+        >
+          {[5, 10, 15, 20, 25, 30].map(g => (
+            <option key={g} value={g}>{g}g</option>
+          ))}
+        </select>
       </div>
       <div className="flex gap-3">
         <button

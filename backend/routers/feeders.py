@@ -1,8 +1,13 @@
+from datetime import datetime, timedelta
+from http import HTTPMethod
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from pypetkitapi.command import DeviceCommand, FeederCommand
+from pypetkitapi.const import PetkitEndpoint
 
 from backend.client import get_client, refresh_data, get_feeders
+from backend.scheduler import load_schedules, save_schedules, mark_skip
 
 router = APIRouter(prefix="/api/feeders", tags=["feeders"])
 
@@ -71,6 +76,47 @@ def _serialize_feeder(feeder) -> dict:
     }
 
 
+async def _fetch_d4_records(client, device_id: int) -> dict:
+    """Fetch feed history directly from the D4 feedStatistic endpoint.
+
+    The pypetkitapi library doesn't parse this response correctly — it expects
+    {eat: [], feed: [], ...} but D4 returns {YYYYMMDD: {seconds: amount}, realAmount: N}.
+    We make the raw request ourselves and convert it.
+    """
+    today = datetime.now()
+    dates = [(today - timedelta(days=i)).strftime("%Y%m%d") for i in range(7)]
+    all_events = []
+
+    for date_str in dates:
+        params = {"date": date_str, "type": 0, "deviceId": device_id}
+        response = await client.req.request(
+            method=HTTPMethod.POST,
+            url=f"d4/{PetkitEndpoint.FEED_STATISTIC}",
+            params=params,
+            headers=await client.get_session_id(),
+        )
+        if not isinstance(response, dict):
+            continue
+        day_data = response.get(date_str)
+        if not isinstance(day_data, dict):
+            continue
+        for seconds_str, amount in day_data.items():
+            try:
+                seconds = int(seconds_str)
+            except ValueError:
+                continue
+            hours, remainder = divmod(seconds, 3600)
+            minutes = remainder // 60
+            all_events.append({
+                "date": f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}",
+                "time": f"{hours:02d}:{minutes:02d}",
+                "amount": amount,
+            })
+
+    all_events.sort(key=lambda e: (e["date"], e["time"]), reverse=True)
+    return {"eat": [], "feed": all_events, "move": [], "pet": []}
+
+
 def _serialize_records(feeder) -> dict:
     records = feeder.device_records
     if not records:
@@ -113,11 +159,15 @@ async def get_feeder(device_id: int):
 
 @router.get("/{device_id}/records")
 async def get_feeder_records(device_id: int):
-    client = await get_client()
+    client = await refresh_data()
     feeders = get_feeders(client)
     if device_id not in feeders:
         raise HTTPException(404, "Feeder not found")
-    return _serialize_records(feeders[device_id])
+    feeder = feeders[device_id]
+    device_type = getattr(getattr(feeder, "device_nfo", None), "device_type", None)
+    if device_type == "d4":
+        return await _fetch_d4_records(client, device_id)
+    return _serialize_records(feeder)
 
 
 class ManualFeedRequest(BaseModel):
@@ -145,6 +195,7 @@ async def manual_feed(device_id: int, req: ManualFeedRequest):
         raise HTTPException(400, "Must provide amount, amount1, or amount2")
 
     await client.send_api_request(device_id, FeederCommand.MANUAL_FEED, payload)
+    mark_skip(device_id)
     return {"status": "ok"}
 
 
@@ -219,3 +270,46 @@ async def refresh_feeder(device_id: int):
     if device_id not in feeders:
         raise HTTPException(404, "Feeder not found")
     return _serialize_feeder(feeders[device_id])
+
+
+class ScheduleRequest(BaseModel):
+    time: str  # HH:MM
+    amount: int
+
+
+@router.get("/{device_id}/schedule")
+async def get_schedule(device_id: int):
+    client = await get_client()
+    feeders = get_feeders(client)
+    if device_id not in feeders:
+        raise HTTPException(404, "Feeder not found")
+    schedules = load_schedules()
+    return schedules.get(str(device_id))
+
+
+@router.put("/{device_id}/schedule")
+async def set_schedule(device_id: int, req: ScheduleRequest):
+    client = await get_client()
+    feeders = get_feeders(client)
+    if device_id not in feeders:
+        raise HTTPException(404, "Feeder not found")
+    schedules = load_schedules()
+    schedules[str(device_id)] = {
+        "time": req.time,
+        "amount": req.amount,
+        "skip_next": False,
+    }
+    save_schedules(schedules)
+    return schedules[str(device_id)]
+
+
+@router.delete("/{device_id}/schedule")
+async def delete_schedule(device_id: int):
+    client = await get_client()
+    feeders = get_feeders(client)
+    if device_id not in feeders:
+        raise HTTPException(404, "Feeder not found")
+    schedules = load_schedules()
+    schedules.pop(str(device_id), None)
+    save_schedules(schedules)
+    return {"status": "ok"}
