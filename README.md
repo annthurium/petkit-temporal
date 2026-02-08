@@ -2,6 +2,8 @@
 
 A web app for controlling PetKit automatic pet feeders. Provides a dashboard to monitor feeder status, trigger manual feedings, view feeding history, and set up custom feeding schedules — all through a local web UI backed by the PetKit cloud API.
 
+Note: due to PetKit's janky authentication supporting only once device at a time, using this app will log you out of PetKit's mobile app.
+
 ## Stack
 
 - **Backend:** Python / FastAPI, using [pypetkitapi](https://github.com/Jezza34000/py-petkit-api) for PetKit cloud communication
