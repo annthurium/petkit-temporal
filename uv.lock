@@ -502,6 +502,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "pypetkitapi" },
     { name = "python-dotenv" },
+    { name = "tenacity" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -517,6 +518,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "pypetkitapi", specifier = ">=1.22.4" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "tenacity", specifier = ">=9.1.4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
 ]
 
