@@ -13,29 +13,15 @@ export default function FeedingHistory({ feederId, hasEatDetection }: Props) {
 
   useEffect(() => {
     setLoading(true);
-    console.log('[FeedingHistory] fetching records for feederId:', feederId);
     fetchRecords(feederId)
-      .then((data) => {
-        console.log('[FeedingHistory] raw API response:', JSON.stringify(data, null, 2));
-        console.log('[FeedingHistory] record counts —',
-          'eat:', data?.eat?.length, 'feed:', data?.feed?.length,
-          'move:', data?.move?.length, 'pet:', data?.pet?.length);
-        setRecords(data);
-      })
-      .catch((err) => {
-        console.error('[FeedingHistory] fetch error:', err);
-      })
+      .then(setRecords)
       .finally(() => setLoading(false));
   }, [feederId]);
 
   if (loading) return <p className="text-vapor-muted">Loading records...</p>;
-  if (!records) {
-    console.warn('[FeedingHistory] records state is null — showing "No records available"');
-    return <p className="text-vapor-muted">No records available.</p>;
-  }
+  if (!records) return <p className="text-vapor-muted">No records available.</p>;
 
   const items = tab === 'feed' ? records.feed : records.eat;
-  console.log(`[FeedingHistory] rendering tab="${tab}", items count:`, items.length);
 
   return (
     <div>
