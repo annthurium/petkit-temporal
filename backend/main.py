@@ -1,6 +1,9 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(name)s: %(message)s")
 
 from backend.client import shutdown
 from backend.routers.feeders import router as feeders_router

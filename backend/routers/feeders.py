@@ -1,9 +1,16 @@
+import logging
+from datetime import datetime, timedelta
+from http import HTTPMethod
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from pypetkitapi.command import DeviceCommand, FeederCommand
+from pypetkitapi.const import PetkitEndpoint
 
 from backend.client import get_client, refresh_data, get_feeders
 from backend.scheduler import load_schedules, save_schedules, mark_skip
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/feeders", tags=["feeders"])
 
@@ -72,9 +79,53 @@ def _serialize_feeder(feeder) -> dict:
     }
 
 
+async def _fetch_d4_records(client, device_id: int) -> dict:
+    """Fetch feed history directly from the D4 feedStatistic endpoint.
+
+    The pypetkitapi library doesn't parse this response correctly — it expects
+    {eat: [], feed: [], ...} but D4 returns {YYYYMMDD: {seconds: amount}, realAmount: N}.
+    We make the raw request ourselves and convert it.
+    """
+    today = datetime.now()
+    dates = [(today - timedelta(days=i)).strftime("%Y%m%d") for i in range(7)]
+    all_events = []
+
+    for date_str in dates:
+        params = {"date": date_str, "type": 0, "deviceId": device_id}
+        response = await client.req.request(
+            method=HTTPMethod.POST,
+            url=f"d4/{PetkitEndpoint.FEED_STATISTIC}",
+            params=params,
+            headers=await client.get_session_id(),
+        )
+        logger.debug("d4 feedStatistic raw response for %s: %s", date_str, response)
+        if not isinstance(response, dict):
+            continue
+        day_data = response.get(date_str)
+        if not isinstance(day_data, dict):
+            continue
+        for seconds_str, amount in day_data.items():
+            try:
+                seconds = int(seconds_str)
+            except ValueError:
+                continue
+            hours, remainder = divmod(seconds, 3600)
+            minutes = remainder // 60
+            all_events.append({
+                "date": f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}",
+                "time": f"{hours:02d}:{minutes:02d}",
+                "amount": amount,
+            })
+
+    all_events.sort(key=lambda e: (e["date"], e["time"]), reverse=True)
+    return {"eat": [], "feed": all_events, "move": [], "pet": []}
+
+
 def _serialize_records(feeder) -> dict:
     records = feeder.device_records
+    logger.debug("device_records type: %s, value: %s", type(records), records)
     if not records:
+        logger.warning("device_records is falsy for feeder %s — returning empty lists", feeder.id)
         return {"eat": [], "feed": [], "move": [], "pet": []}
 
     def _serialize_record_list(items):
@@ -114,11 +165,19 @@ async def get_feeder(device_id: int):
 
 @router.get("/{device_id}/records")
 async def get_feeder_records(device_id: int):
-    client = await get_client()
+    logger.debug("GET /records — device_id=%s", device_id)
+    client = await refresh_data()
     feeders = get_feeders(client)
     if device_id not in feeders:
         raise HTTPException(404, "Feeder not found")
-    return _serialize_records(feeders[device_id])
+    feeder = feeders[device_id]
+    device_type = getattr(getattr(feeder, "device_nfo", None), "device_type", None)
+    if device_type == "d4":
+        result = await _fetch_d4_records(client, device_id)
+    else:
+        result = _serialize_records(feeder)
+    logger.debug("returning %s", {k: len(v) for k, v in result.items()})
+    return result
 
 
 class ManualFeedRequest(BaseModel):

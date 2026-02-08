@@ -16,12 +16,14 @@ type Tab = 'status' | 'feed' | 'schedule' | 'history' | 'settings';
 export default function FeederDashboard({ feeder, onRefresh }: Props) {
   const [tab, setTab] = useState<Tab>('status');
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
       await refreshFeeder(feeder.id);
       onRefresh();
+      setRefreshKey(k => k + 1);
     } finally {
       setRefreshing(false);
     }
@@ -109,7 +111,7 @@ export default function FeederDashboard({ feeder, onRefresh }: Props) {
         )}
         {tab === 'feed' && <ManualFeed feederId={feeder.id} onDone={onRefresh} />}
         {tab === 'schedule' && <FeedSchedulePanel feederId={feeder.id} />}
-        {tab === 'history' && <FeedingHistory feederId={feeder.id} hasEatDetection={caps.eatDetection} />}
+        {tab === 'history' && <FeedingHistory key={refreshKey} feederId={feeder.id} hasEatDetection={caps.eatDetection} />}
         {tab === 'settings' && <FeederSettings feeder={feeder} onDone={onRefresh} />}
       </div>
     </div>
