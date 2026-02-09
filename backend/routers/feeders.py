@@ -1,12 +1,16 @@
 from datetime import datetime, timedelta
 from http import HTTPMethod
 
+import logging
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from pypetkitapi.command import DeviceCommand, FeederCommand
 from pypetkitapi.const import PetkitEndpoint
 
 from backend.client import get_client, refresh_data, get_feeders, send_api_request_with_retry
+
+logger = logging.getLogger(__name__)
 from backend.scheduler import load_schedules, save_schedules, mark_skip
 
 router = APIRouter(prefix="/api/feeders", tags=["feeders"])
@@ -195,7 +199,9 @@ async def manual_feed(device_id: int, req: ManualFeedRequest):
     if not payload:
         raise HTTPException(400, "Must provide amount, amount1, or amount2")
 
+    logger.info("Manual feed requested for device %s: %s", device_id, payload)
     await send_api_request_with_retry(client, device_id, FeederCommand.MANUAL_FEED, payload)
+    logger.info("Manual feed dispensed for device %s, setting skip_next=True", device_id)
     # Skip the next scheduled meal if a manual feed was initiated
     mark_skip(device_id)
     return {"status": "ok"}

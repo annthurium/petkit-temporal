@@ -69,18 +69,19 @@ async def _schedule_loop() -> None:
                 # A manual feed was triggered since the last schedule tick,
                 # so skip this cycle to avoid double-feeding.
                 if sched.get("skip_next"):
-                    logger.info("Skipping scheduled feed for device %s (manual feed override)", device_id)
+                    logger.info("Skipping scheduled feed for device %s at %s (skip_next was set by a previous manual feed)", device_id, current_time)
                     schedules[device_id_str]["skip_next"] = False
                     save_schedules(schedules)
                     continue
 
-                logger.info("Dispensing scheduled feed for device %s: %sg", device_id, sched["amount"])
+                logger.info("Scheduled feed triggered for device %s at %s: dispensing %sg", device_id, current_time, sched["amount"])
                 try:
                     client = await get_client()
                     await send_api_request_with_retry(client, device_id, FeederCommand.MANUAL_FEED, {"amount": sched["amount"]})
                     await refresh_data()
+                    logger.info("Scheduled feed completed successfully for device %s", device_id)
                 except Exception:
-                    logger.exception("Failed to dispense scheduled feed for device %s", device_id)
+                    logger.exception("Scheduled feed FAILED for device %s (retries exhausted)", device_id)
 
         except Exception:
             logger.exception("Error in schedule loop")
