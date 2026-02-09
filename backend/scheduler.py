@@ -12,11 +12,16 @@ from backend.config import PETKIT_TIMEZONE
 
 logger = logging.getLogger(__name__)
 
+# This module implements custom scheduling logic, allowing us to skip the next scheduled feed when a manual feed is initiated
+# PetKit's API does not natively support this, so it was easier to implement our own scheduler.
+# Writing to a file for persistent storage would not scale to a large number of devices.
+# This is just a personal project, I don't have a million cats, premature optimization is the root of all evil etc.
+
 SCHEDULES_FILE = Path(__file__).parent / "schedules.json"
 
 _task: asyncio.Task | None = None
-_dispatched_this_minute: set[int] = set()  # device IDs already handled in the current scheduled minute
-
+# _dispatched_this_minute contains device IDs already handled in the current scheduled minute
+_dispatched_this_minute: set[int] = set()
 
 def load_schedules() -> dict[str, dict]:
     if SCHEDULES_FILE.exists():

@@ -30,7 +30,7 @@ async def get_client() -> PetKitClient:
 @retry(
     stop=stop_after_attempt(NUM_RETRIES),
     wait=wait_exponential(multiplier=1, min=2, max=30),
-
+    reraise=True
 )
 async def send_api_request_with_retry(client, device_id, command, payload):
     await client.send_api_request(device_id, command, payload)
