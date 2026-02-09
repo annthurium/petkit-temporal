@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from pypetkitapi.command import FeederCommand
 
-from backend.client import get_client, refresh_data
+from backend.client import get_client, refresh_data, send_api_request_with_retry
 from backend.config import PETKIT_TIMEZONE
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ async def _schedule_loop() -> None:
                 logger.info("Dispensing scheduled feed for device %s: %sg", device_id, sched["amount"])
                 try:
                     client = await get_client()
-                    await client.send_api_request(device_id, FeederCommand.MANUAL_FEED, {"amount": sched["amount"]})
+                    await send_api_request_with_retry(client, device_id, FeederCommand.MANUAL_FEED, {"amount": sched["amount"]})
                     await refresh_data()
                 except Exception:
                     logger.exception("Failed to dispense scheduled feed for device %s", device_id)
