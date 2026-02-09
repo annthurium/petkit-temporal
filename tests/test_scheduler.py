@@ -15,11 +15,11 @@ def _isolate_schedules(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _clear_fed_today():
-    """Reset the module-level _fed_today set between tests."""
-    scheduler._fed_today.clear()
+def _clear_dispatched():
+    """Reset the module-level _dispatched_this_minute set between tests."""
+    scheduler._dispatched_this_minute.clear()
     yield
-    scheduler._fed_today.clear()
+    scheduler._dispatched_this_minute.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ class TestScheduleLoop:
     @pytest.mark.asyncio
     async def test_does_not_refeed_in_same_minute_window(self):
         scheduler.save_schedules({"100": {"time": "07:30", "amount": 15, "skip_next": False}})
-        scheduler._fed_today.add(100)
+        scheduler._dispatched_this_minute.add(100)
 
         fake_client = AsyncMock()
         fake_now = _make_fake_now("07:30")
@@ -143,9 +143,9 @@ class TestScheduleLoop:
         fake_client.send_api_request.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_clears_fed_today_when_time_no_longer_matches(self):
+    async def test_clears_dispatched_when_time_no_longer_matches(self):
         scheduler.save_schedules({"100": {"time": "07:30", "amount": 15, "skip_next": False}})
-        scheduler._fed_today.add(100)
+        scheduler._dispatched_this_minute.add(100)
 
         fake_now = _make_fake_now("08:00")  # different from schedule time
 
@@ -158,7 +158,7 @@ class TestScheduleLoop:
             with pytest.raises(asyncio.CancelledError):
                 await scheduler._schedule_loop()
 
-        assert 100 not in scheduler._fed_today
+        assert 100 not in scheduler._dispatched_this_minute
 
 
 # ---------------------------------------------------------------------------

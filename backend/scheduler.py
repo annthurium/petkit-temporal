@@ -7,16 +7,21 @@ from zoneinfo import ZoneInfo
 
 from pypetkitapi.command import FeederCommand
 
-from backend.client import get_client, refresh_data
+from backend.client import get_client, refresh_data, send_api_request_with_retry
 from backend.config import PETKIT_TIMEZONE
 
 logger = logging.getLogger(__name__)
 
+# This module implements custom scheduling logic, allowing us to skip the next scheduled feed when a manual feed is initiated
+# PetKit's API does not natively support this, so it was easier to implement our own scheduler.
+# Writing to a file for persistent storage would not scale to a large number of devices.
+# This is just a personal project, I don't have a million cats, premature optimization is the root of all evil etc.
+
 SCHEDULES_FILE = Path(__file__).parent / "schedules.json"
 
 _task: asyncio.Task | None = None
-_fed_today: set[int] = set()  # device IDs already fed in the current minute window
-
+# _dispatched_this_minute contains device IDs already handled in the current scheduled minute
+_dispatched_this_minute: set[int] = set()
 
 def load_schedules() -> dict[str, dict]:
     if SCHEDULES_FILE.exists():
@@ -37,6 +42,8 @@ def mark_skip(device_id: int) -> None:
 
 
 async def _schedule_loop() -> None:
+    # Polls every 30s. Since a scheduled minute lasts 60s, each schedule will
+    # be seen ~2 times per window. _dispatched_this_minute prevents duplicates.
     tz = ZoneInfo(PETKIT_TIMEZONE)
     while True:
         try:
@@ -47,15 +54,20 @@ async def _schedule_loop() -> None:
             for device_id_str, sched in schedules.items():
                 device_id = int(device_id_str)
 
+                # Not this device's scheduled minute — clear it from the
+                # dedup set so it's eligible again next time its minute arrives.
                 if sched["time"] != current_time:
-                    _fed_today.discard(device_id)
+                    _dispatched_this_minute.discard(device_id)
                     continue
 
-                if device_id in _fed_today:
+                # Already handled during this minute window (fed or skipped).
+                if device_id in _dispatched_this_minute:
                     continue
 
-                _fed_today.add(device_id)
+                _dispatched_this_minute.add(device_id)
 
+                # A manual feed was triggered since the last schedule tick,
+                # so skip this cycle to avoid double-feeding.
                 if sched.get("skip_next"):
                     logger.info("Skipping scheduled feed for device %s (manual feed override)", device_id)
                     schedules[device_id_str]["skip_next"] = False
@@ -65,7 +77,7 @@ async def _schedule_loop() -> None:
                 logger.info("Dispensing scheduled feed for device %s: %sg", device_id, sched["amount"])
                 try:
                     client = await get_client()
-                    await client.send_api_request(device_id, FeederCommand.MANUAL_FEED, {"amount": sched["amount"]})
+                    await send_api_request_with_retry(client, device_id, FeederCommand.MANUAL_FEED, {"amount": sched["amount"]})
                     await refresh_data()
                 except Exception:
                     logger.exception("Failed to dispense scheduled feed for device %s", device_id)

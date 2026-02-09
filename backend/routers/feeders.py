@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from pypetkitapi.command import DeviceCommand, FeederCommand
 from pypetkitapi.const import PetkitEndpoint
 
-from backend.client import get_client, refresh_data, get_feeders
+from backend.client import get_client, refresh_data, get_feeders, send_api_request_with_retry
 from backend.scheduler import load_schedules, save_schedules, mark_skip
 
 router = APIRouter(prefix="/api/feeders", tags=["feeders"])
@@ -176,6 +176,7 @@ class ManualFeedRequest(BaseModel):
     amount2: int | None = None
 
 
+
 @router.post("/{device_id}/feed")
 async def manual_feed(device_id: int, req: ManualFeedRequest):
     client = await get_client()
@@ -194,7 +195,8 @@ async def manual_feed(device_id: int, req: ManualFeedRequest):
     if not payload:
         raise HTTPException(400, "Must provide amount, amount1, or amount2")
 
-    await client.send_api_request(device_id, FeederCommand.MANUAL_FEED, payload)
+    await send_api_request_with_retry(client, device_id, FeederCommand.MANUAL_FEED, payload)
+    # Skip the next scheduled meal if a manual feed was initiated
     mark_skip(device_id)
     return {"status": "ok"}
 
@@ -243,6 +245,8 @@ async def food_replenished(device_id: int):
     return {"status": "ok"}
 
 
+# Currently unused in the UI — controls PetKit's built-in device schedule,
+# not the custom schedule in schedules.json.
 @router.post("/{device_id}/schedule/remove")
 async def remove_schedule(device_id: int):
     client = await get_client()
@@ -253,6 +257,7 @@ async def remove_schedule(device_id: int):
     return {"status": "ok"}
 
 
+# Currently unused in the UI — see remove_schedule above.
 @router.post("/{device_id}/schedule/restore")
 async def restore_schedule(device_id: int):
     client = await get_client()
