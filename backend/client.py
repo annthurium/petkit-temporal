@@ -1,13 +1,11 @@
 import aiohttp
 from pypetkitapi.client import PetKitClient
-from pypetkitapi.const import DEVICES_FEEDER
 from pypetkitapi.feeder_container import Feeder
-from backend.config import PETKIT_USERNAME, PETKIT_PASSWORD, PETKIT_REGION, PETKIT_TIMEZONE
+from backend.config import NUM_RETRIES, PETKIT_USERNAME, PETKIT_PASSWORD, PETKIT_REGION, PETKIT_TIMEZONE
 
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-# Do I need a CONST file? Ehh, maybe if I start accumulating more consts.
-NUM_RETRIES = 5
+
 
 
 _client: PetKitClient | None = None
