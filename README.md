@@ -24,6 +24,7 @@ python3 -m venv .venv
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
 - Node.js 18+
+- [Temporal](https://docs.temporal.io/cli#install) (workflow engine)
 
 ### Configuration
 
@@ -34,6 +35,9 @@ PETKIT_USERNAME="your-petkit-email"
 PETKIT_PASSWORD="your-petkit-password"
 PETKIT_REGION="US"
 PETKIT_TIMEZONE="America/Los_Angeles"
+TEMPORAL_HOST="localhost:7233"
+TEMPORAL_NAMESPACE="default"
+TEMPORAL_TASK_QUEUE="petkit-tasks"
 ```
 
 ### Install dependencies
@@ -48,15 +52,26 @@ cd frontend && npm install
 
 ## Running
 
-Start the backend and frontend in separate terminals:
+Start the Temporal server, backend, and frontend in separate terminals:
 
 ```bash
+# Temporal dev server
+temporal server start-dev
+
 # Backend (from project root)
 uv run uvicorn backend.main:app --reload
 
 # Frontend (from frontend/)
 cd frontend && npm run dev
 ```
+
+The backend automatically starts a Temporal worker as a background task when the server boots. You can also run the worker standalone:
+
+```bash
+uv run python -m backend.temporal.worker
+```
+
+The Temporal web UI is available at `http://localhost:8233` for inspecting workflows.
 
 The frontend runs at `http://localhost:5173` and proxies API requests to the backend at `http://localhost:8000`.
 
@@ -70,18 +85,25 @@ uv run pytest tests/ -v
 
 ```
 backend/
-  main.py            # FastAPI app setup and lifespan
+  main.py            # FastAPI app setup, lifespan, Temporal worker startup
   client.py          # PetKit API client singleton
   config.py          # Environment variable config
-  scheduler.py       # Scheduled feeding loop
   routers/
     feeders.py       # All /api/feeders endpoints
+  temporal/
+    client.py        # Temporal client singleton
+    worker.py        # Standalone worker entrypoint
+    workflows/
+      feeder_workflows.py  # DailyScheduledFeedingWorkflow
+    activities/
+      feeder_activities.py # manual_feed, cancel_feed, get_feeder_status
 frontend/
   src/
     App.tsx          # Root component
     api.ts           # Axios API client
     components/      # React components (dashboard, feed controls, etc.)
 tests/
-  test_scheduler.py  # Scheduler unit tests
+  test_workflows.py  # Activity and workflow unit tests
   test_router.py     # Router/endpoint integration tests
+  test_retry.py      # Retry logic tests
 ```

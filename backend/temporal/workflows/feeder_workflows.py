@@ -1,0 +1,181 @@
+from dataclasses import dataclass
+from datetime import timedelta
+
+from temporalio import workflow
+
+with workflow.unsafe.imports_passed_through():
+    from zoneinfo import ZoneInfo
+
+    from backend.temporal.activities.feeder_activities import (
+        ManualFeedInput,
+        manual_feed,
+        get_feeder_status,
+    )
+
+
+@dataclass
+class ManualFeedSignal:
+    amount: int | None = None
+    amount1: int | None = None
+    amount2: int | None = None
+
+
+@dataclass
+class DailyScheduledFeedingInput:
+    device_id: int
+    amount: int
+    hour: int  # 0-23, hour of day in the specified timezone
+    minute: int = 0  # 0-59
+    timezone: str = "America/Los_Angeles"
+    max_feedings: int | None = None
+
+
+@workflow.defn
+class DailyScheduledFeedingWorkflow:
+    """
+    A workflow that feeds a pet at a specific time every day.
+
+    This workflow:
+    - Feeds at a specific time of day (e.g., 7:00 AM Pacific)
+    - Repeats every 24 hours
+    - Skips the next scheduled feed if a manual feed is triggered
+    - Manual feeds can be triggered via signal at any time
+    """
+
+    def __init__(self) -> None:
+        self._feeding_count = 0
+        self._paused = False
+        self._manual_feed_request: ManualFeedSignal | None = None
+        self._skip_next_scheduled: bool = False
+
+    def _to_local_naive(self, timezone_str: str):
+        """Convert workflow.now() (UTC) to a naive local datetime.
+
+        Avoids datetime.astimezone() which does a C-level isinstance(tz, tzinfo)
+        check that fails with Temporal's sandboxed _RestrictedProxy objects.
+        Instead, we call tz.utcoffset() (a Python method the proxy can forward)
+        and apply the offset manually.
+        """
+        tz = ZoneInfo(timezone_str)
+        utc_now = workflow.now()
+        offset = tz.utcoffset(utc_now.replace(tzinfo=None))
+        return utc_now.replace(tzinfo=None) + offset
+
+    def _get_wait_duration(self, input: DailyScheduledFeedingInput) -> timedelta:
+        """Calculate how long to wait until the next scheduled feeding."""
+        local_now = self._to_local_naive(input.timezone)
+        scheduled_today = local_now.replace(
+            hour=input.hour, minute=input.minute, second=0, microsecond=0
+        )
+
+        if local_now >= scheduled_today:
+            scheduled_today += timedelta(days=1)
+
+        return scheduled_today - local_now
+
+    @workflow.run
+    async def run(self, input: DailyScheduledFeedingInput) -> dict:
+        while True:
+            # Check if we've reached max feedings
+            if input.max_feedings and self._feeding_count >= input.max_feedings:
+                return {
+                    "status": "completed",
+                    "total_feedings": self._feeding_count,
+                }
+
+            # Calculate wait duration until next scheduled feeding
+            wait_duration = self._get_wait_duration(input)
+            local_now = self._to_local_naive(input.timezone)
+            next_time = local_now + wait_duration
+            workflow.logger.info(
+                f"Next feeding scheduled in {wait_duration} at "
+                f"{next_time.strftime('%Y-%m-%d %H:%M')}"
+            )
+
+            # Wait until scheduled time, or until a manual feed is requested
+            await workflow.wait_condition(
+                lambda: self._manual_feed_request is not None,
+                timeout=wait_duration,
+            )
+
+            # Determine feed amounts - manual request overrides scheduled
+            if self._manual_feed_request is not None:
+                feed_input = ManualFeedInput(
+                    device_id=input.device_id,
+                    amount=self._manual_feed_request.amount,
+                    amount1=self._manual_feed_request.amount1,
+                    amount2=self._manual_feed_request.amount2,
+                )
+                self._manual_feed_request = None
+                is_manual = True
+                # Skip the next scheduled feed since we just fed manually
+                self._skip_next_scheduled = True
+            else:
+                # Scheduled feed time reached
+                if self._paused:
+                    continue
+
+                # Skip this scheduled feed if a manual feed was recently done
+                if self._skip_next_scheduled:
+                    workflow.logger.info(
+                        f"Skipping scheduled feed for device {input.device_id} "
+                        "due to recent manual feed"
+                    )
+                    self._skip_next_scheduled = False
+                    continue
+
+                feed_input = ManualFeedInput(device_id=input.device_id, amount=input.amount)
+                is_manual = False
+
+            # Check feeder status before feeding
+            status = await workflow.execute_activity(
+                get_feeder_status,
+                input.device_id,
+                start_to_close_timeout=timedelta(seconds=30),
+            )
+
+            # Skip if offline or has errors
+            if not status.online:
+                workflow.logger.warning(f"Feeder {input.device_id} is offline, skipping")
+                continue
+
+            if status.error_msg:
+                workflow.logger.warning(f"Feeder has error: {status.error_msg}")
+                continue
+
+            # Execute the feeding
+            await workflow.execute_activity(
+                manual_feed,
+                feed_input,
+                start_to_close_timeout=timedelta(seconds=30),
+            )
+
+            self._feeding_count += 1
+            feed_type = "Manual" if is_manual else "Scheduled"
+            workflow.logger.info(
+                f"{feed_type} feeding #{self._feeding_count} completed for device {input.device_id}"
+            )
+
+    @workflow.signal
+    def pause(self) -> None:
+        """Pause the feeding schedule."""
+        self._paused = True
+
+    @workflow.signal
+    def resume(self) -> None:
+        """Resume the feeding schedule."""
+        self._paused = False
+
+    @workflow.signal
+    def manual_feed_now(self, request: ManualFeedSignal) -> None:
+        """Request an immediate manual feed. The next scheduled feed will be skipped."""
+        self._manual_feed_request = request
+
+    @workflow.query
+    def status(self) -> dict:
+        """Get current workflow status."""
+        return {
+            "feeding_count": self._feeding_count,
+            "paused": self._paused,
+            "skip_next_scheduled": self._skip_next_scheduled,
+        }

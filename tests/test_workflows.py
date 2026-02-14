@@ -1,0 +1,230 @@
+"""Tests for Temporal activities and workflow dataclasses.
+
+The activity functions are tested directly by mocking the PetKit client.
+Full workflow integration tests require a running Temporal test server
+(started via WorkflowEnvironment.start_time_skipping()) which downloads
+a binary on first run — those can be run separately with:
+    pytest tests/test_workflows.py -k integration
+"""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from backend.temporal.activities.feeder_activities import (
+    ManualFeedInput,
+    FeederStatus,
+    manual_feed,
+    cancel_feed,
+    get_feeder_status,
+)
+from backend.temporal.workflows.feeder_workflows import (
+    DailyScheduledFeedingInput,
+    DailyScheduledFeedingWorkflow,
+    ManualFeedSignal,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_feeder(device_id=100, name="TestFeeder", online=True, error_msg=None, food=1):
+    state = SimpleNamespace(
+        wifi=1 if online else 0,
+        food=food,
+        error_msg=error_msg,
+    )
+    return SimpleNamespace(id=device_id, name=name, state=state)
+
+
+# ---------------------------------------------------------------------------
+# Activity: manual_feed
+# ---------------------------------------------------------------------------
+
+class TestManualFeedActivity:
+    @pytest.mark.asyncio
+    async def test_sends_single_hopper_feed(self):
+        fake_client = AsyncMock()
+        feeders = {100: _make_feeder(100)}
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+        ):
+            result = await manual_feed(ManualFeedInput(device_id=100, amount=10))
+            assert result == {"status": "ok", "device_id": 100}
+            fake_client.send_api_request.assert_awaited_once()
+            call_args = fake_client.send_api_request.call_args[0]
+            assert call_args[0] == 100
+            assert call_args[2] == {"amount": 10}
+
+    @pytest.mark.asyncio
+    async def test_sends_dual_hopper_feed(self):
+        fake_client = AsyncMock()
+        feeders = {100: _make_feeder(100)}
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+        ):
+            result = await manual_feed(ManualFeedInput(device_id=100, amount1=5, amount2=3))
+            assert result == {"status": "ok", "device_id": 100}
+            call_args = fake_client.send_api_request.call_args[0]
+            assert call_args[2] == {"amount1": 5, "amount2": 3}
+
+    @pytest.mark.asyncio
+    async def test_raises_for_unknown_feeder(self):
+        fake_client = AsyncMock()
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
+        ):
+            with pytest.raises(Exception, match="not found"):
+                await manual_feed(ManualFeedInput(device_id=999, amount=10))
+
+
+# ---------------------------------------------------------------------------
+# Activity: cancel_feed
+# ---------------------------------------------------------------------------
+
+class TestCancelFeedActivity:
+    @pytest.mark.asyncio
+    async def test_cancels_feed(self):
+        fake_client = AsyncMock()
+        feeders = {100: _make_feeder(100)}
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+        ):
+            result = await cancel_feed(100)
+            assert result == {"status": "ok", "device_id": 100}
+            fake_client.send_api_request.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_raises_for_unknown_feeder(self):
+        fake_client = AsyncMock()
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
+        ):
+            with pytest.raises(Exception, match="not found"):
+                await cancel_feed(999)
+
+
+# ---------------------------------------------------------------------------
+# Activity: get_feeder_status
+# ---------------------------------------------------------------------------
+
+class TestGetFeederStatusActivity:
+    @pytest.mark.asyncio
+    async def test_returns_status(self):
+        fake_client = AsyncMock()
+        feeder = _make_feeder(100, online=True, food=1, error_msg=None)
+        feeders = {100: feeder}
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+        ):
+            status = await get_feeder_status(100)
+            assert isinstance(status, FeederStatus)
+            assert status.device_id == 100
+            assert status.online is True
+            assert status.food == 1
+            assert status.error_msg is None
+
+    @pytest.mark.asyncio
+    async def test_returns_offline_status(self):
+        fake_client = AsyncMock()
+        feeder = _make_feeder(100, online=False)
+        feeders = {100: feeder}
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+        ):
+            status = await get_feeder_status(100)
+            assert status.online is False
+
+    @pytest.mark.asyncio
+    async def test_raises_for_unknown_feeder(self):
+        fake_client = AsyncMock()
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
+        ):
+            with pytest.raises(Exception, match="not found"):
+                await get_feeder_status(999)
+
+
+# ---------------------------------------------------------------------------
+# Dataclasses
+# ---------------------------------------------------------------------------
+
+class TestDataclasses:
+    def test_manual_feed_input_defaults(self):
+        inp = ManualFeedInput(device_id=1)
+        assert inp.amount is None
+        assert inp.amount1 is None
+        assert inp.amount2 is None
+
+    def test_daily_scheduled_feeding_input_defaults(self):
+        inp = DailyScheduledFeedingInput(device_id=1, amount=10, hour=7)
+        assert inp.minute == 0
+        assert inp.timezone == "America/Los_Angeles"
+        assert inp.max_feedings is None
+
+    def test_manual_feed_signal_defaults(self):
+        sig = ManualFeedSignal()
+        assert sig.amount is None
+        assert sig.amount1 is None
+        assert sig.amount2 is None
+
+
+# ---------------------------------------------------------------------------
+# Workflow class (unit-level)
+# ---------------------------------------------------------------------------
+
+class TestDailyScheduledFeedingWorkflowUnit:
+    def test_initial_state(self):
+        wf = DailyScheduledFeedingWorkflow()
+        assert wf._feeding_count == 0
+        assert wf._paused is False
+        assert wf._manual_feed_request is None
+        assert wf._skip_next_scheduled is False
+
+    def test_pause_signal(self):
+        wf = DailyScheduledFeedingWorkflow()
+        wf.pause()
+        assert wf._paused is True
+
+    def test_resume_signal(self):
+        wf = DailyScheduledFeedingWorkflow()
+        wf.pause()
+        wf.resume()
+        assert wf._paused is False
+
+    def test_manual_feed_now_signal(self):
+        wf = DailyScheduledFeedingWorkflow()
+        sig = ManualFeedSignal(amount=5)
+        wf.manual_feed_now(sig)
+        assert wf._manual_feed_request is sig
+
+    def test_status_query(self):
+        wf = DailyScheduledFeedingWorkflow()
+        status = wf.status()
+        assert status == {
+            "feeding_count": 0,
+            "paused": False,
+            "skip_next_scheduled": False,
+        }
+
+    def test_status_reflects_state_changes(self):
+        wf = DailyScheduledFeedingWorkflow()
+        wf._feeding_count = 3
+        wf._paused = True
+        wf._skip_next_scheduled = True
+        status = wf.status()
+        assert status == {
+            "feeding_count": 3,
+            "paused": True,
+            "skip_next_scheduled": True,
+        }
