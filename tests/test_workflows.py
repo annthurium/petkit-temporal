@@ -145,6 +145,24 @@ class TestGetFeederStatusActivity:
             assert status.online is False
 
     @pytest.mark.asyncio
+    async def test_returns_none_online_when_wifi_missing(self):
+        """When the feeder state has no wifi attribute, online should be None (not False).
+
+        Regression test: the workflow previously used `if not status.online` which
+        treated None as offline, silently skipping all scheduled feedings.
+        """
+        fake_client = AsyncMock()
+        state = SimpleNamespace(food=1, error_msg=None)  # no wifi attribute
+        feeder = SimpleNamespace(id=100, name="NoWifiFeeder", state=state)
+        feeders = {100: feeder}
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+        ):
+            status = await get_feeder_status(100)
+            assert status.online is None
+
+    @pytest.mark.asyncio
     async def test_raises_for_unknown_feeder(self):
         fake_client = AsyncMock()
         with (
@@ -215,6 +233,9 @@ class TestDailyScheduledFeedingWorkflowUnit:
             "feeding_count": 0,
             "paused": False,
             "skip_next_scheduled": False,
+            "amount": 0,
+            "hour": 0,
+            "minute": 0,
         }
 
     def test_status_reflects_state_changes(self):
@@ -222,9 +243,15 @@ class TestDailyScheduledFeedingWorkflowUnit:
         wf._feeding_count = 3
         wf._paused = True
         wf._skip_next_scheduled = True
+        wf._amount = 15
+        wf._hour = 8
+        wf._minute = 30
         status = wf.status()
         assert status == {
             "feeding_count": 3,
             "paused": True,
             "skip_next_scheduled": True,
+            "amount": 15,
+            "hour": 8,
+            "minute": 30,
         }

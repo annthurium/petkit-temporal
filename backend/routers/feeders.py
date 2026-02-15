@@ -327,13 +327,14 @@ async def get_schedule(device_id: int):
         if desc.status is not None and desc.status.name != "RUNNING":
             return None
         result = await handle.query(DailyScheduledFeedingWorkflow.status)
-        # Extract the schedule input from the workflow
         return {
-            "time": f"{desc.search_attributes.get('ScheduledHour', [''])[0]}:{desc.search_attributes.get('ScheduledMinute', [''])[0]}",
-            "amount": result.get("feeding_count", 0),
+            "time": f"{result['hour']:02d}:{result['minute']:02d}",
+            "amount": result["amount"],
+            "skip_next": result["skip_next_scheduled"],
             "running": True,
             "workflow_id": workflow_id,
-            **result,
+            "feeding_count": result["feeding_count"],
+            "paused": result["paused"],
         }
     except RPCError:
         return None

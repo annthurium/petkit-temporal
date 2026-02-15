@@ -47,6 +47,9 @@ class DailyScheduledFeedingWorkflow:
         self._paused = False
         self._manual_feed_request: ManualFeedSignal | None = None
         self._skip_next_scheduled: bool = False
+        self._amount: int = 0
+        self._hour: int = 0
+        self._minute: int = 0
 
     def _to_local_naive(self, timezone_str: str):
         """Convert workflow.now() (UTC) to a naive local datetime.
@@ -55,6 +58,7 @@ class DailyScheduledFeedingWorkflow:
         check that fails with Temporal's sandboxed _RestrictedProxy objects.
         Instead, we call tz.utcoffset() (a Python method the proxy can forward)
         and apply the offset manually.
+        TODO: Is this the correct approach? double check the Temporal docs.
         """
         tz = ZoneInfo(timezone_str)
         utc_now = workflow.now()
@@ -75,6 +79,10 @@ class DailyScheduledFeedingWorkflow:
 
     @workflow.run
     async def run(self, input: DailyScheduledFeedingInput) -> dict:
+        self._amount = input.amount
+        self._hour = input.hour
+        self._minute = input.minute
+
         while True:
             # Check if we've reached max feedings
             if input.max_feedings and self._feeding_count >= input.max_feedings:
@@ -134,8 +142,8 @@ class DailyScheduledFeedingWorkflow:
                 start_to_close_timeout=timedelta(seconds=30),
             )
 
-            # Skip if offline or has errors
-            if not status.online:
+            # Skip if explicitly offline (None means unknown — don't skip)
+            if status.online is False:
                 workflow.logger.warning(f"Feeder {input.device_id} is offline, skipping")
                 continue
 
@@ -178,4 +186,7 @@ class DailyScheduledFeedingWorkflow:
             "feeding_count": self._feeding_count,
             "paused": self._paused,
             "skip_next_scheduled": self._skip_next_scheduled,
+            "amount": self._amount,
+            "hour": self._hour,
+            "minute": self._minute,
         }
