@@ -8,8 +8,6 @@ PETKIT_PASSWORD = os.getenv("PETKIT_PASSWORD", "")
 PETKIT_REGION = os.getenv("PETKIT_REGION", "US")
 PETKIT_TIMEZONE = os.getenv("PETKIT_TIMEZONE", "America/Los_Angeles")
 
-NUM_RETRIES = 5
-
 # Temporal configuration
 TEMPORAL_HOST = os.getenv("TEMPORAL_HOST", "localhost:7233")
 TEMPORAL_NAMESPACE = os.getenv("TEMPORAL_NAMESPACE", "default")

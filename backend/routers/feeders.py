@@ -9,7 +9,7 @@ from pypetkitapi.command import DeviceCommand, FeederCommand
 from pypetkitapi.const import PetkitEndpoint
 from temporalio.service import RPCError
 
-from backend.client import get_client, refresh_data, get_feeders, send_api_request_with_retry
+from backend.client import get_client, refresh_data, get_feeders
 from backend.config import TEMPORAL_TASK_QUEUE, PETKIT_TIMEZONE
 from backend.temporal.client import get_temporal_client
 from backend.temporal.workflows.feeder_workflows import (
@@ -224,7 +224,7 @@ async def manual_feed_endpoint(device_id: int, req: ManualFeedRequest):
     if req.amount2 is not None:
         payload["amount2"] = req.amount2
 
-    await send_api_request_with_retry(petkit_client, device_id, FeederCommand.MANUAL_FEED, payload)
+    await petkit_client.send_api_request(device_id, FeederCommand.MANUAL_FEED, payload)
     return {"status": "ok", "via": "direct"}
 
 

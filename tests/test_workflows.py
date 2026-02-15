@@ -7,10 +7,12 @@ a binary on first run — those can be run separately with:
     pytest tests/test_workflows.py -k integration
 """
 
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from temporalio.exceptions import ApplicationError
 
 from backend.temporal.activities.feeder_activities import (
     ManualFeedInput,
@@ -20,6 +22,7 @@ from backend.temporal.activities.feeder_activities import (
     get_feeder_status,
 )
 from backend.temporal.workflows.feeder_workflows import (
+    ACTIVITY_RETRY_POLICY,
     DailyScheduledFeedingInput,
     DailyScheduledFeedingWorkflow,
     ManualFeedSignal,
@@ -79,7 +82,7 @@ class TestManualFeedActivity:
             patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
             patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
         ):
-            with pytest.raises(Exception, match="not found"):
+            with pytest.raises(ApplicationError, match="not found"):
                 await manual_feed(ManualFeedInput(device_id=999, amount=10))
 
 
@@ -107,7 +110,7 @@ class TestCancelFeedActivity:
             patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
             patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
         ):
-            with pytest.raises(Exception, match="not found"):
+            with pytest.raises(ApplicationError, match="not found"):
                 await cancel_feed(999)
 
 
@@ -169,7 +172,7 @@ class TestGetFeederStatusActivity:
             patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
             patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
         ):
-            with pytest.raises(Exception, match="not found"):
+            with pytest.raises(ApplicationError, match="not found"):
                 await get_feeder_status(999)
 
 
@@ -255,3 +258,87 @@ class TestDailyScheduledFeedingWorkflowUnit:
             "hour": 8,
             "minute": 30,
         }
+
+
+# ---------------------------------------------------------------------------
+# Retry policy configuration
+# ---------------------------------------------------------------------------
+
+class TestRetryPolicyConfiguration:
+    def test_maximum_attempts(self):
+        assert ACTIVITY_RETRY_POLICY.maximum_attempts == 3
+
+    def test_backoff_coefficient(self):
+        assert ACTIVITY_RETRY_POLICY.backoff_coefficient == 2.0
+
+    def test_initial_interval(self):
+        assert ACTIVITY_RETRY_POLICY.initial_interval == timedelta(seconds=2)
+
+    def test_maximum_interval(self):
+        assert ACTIVITY_RETRY_POLICY.maximum_interval == timedelta(seconds=30)
+
+
+# ---------------------------------------------------------------------------
+# Error retry behavior
+# ---------------------------------------------------------------------------
+
+class TestApplicationErrorRetryBehavior:
+    """Business errors (feeder not found) should be non-retryable.
+    Transient errors (network failures) should propagate for Temporal to retry.
+    """
+
+    @pytest.mark.asyncio
+    async def test_manual_feed_not_found_is_non_retryable(self):
+        fake_client = AsyncMock()
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
+        ):
+            with pytest.raises(ApplicationError) as exc_info:
+                await manual_feed(ManualFeedInput(device_id=999, amount=10))
+            assert exc_info.value.non_retryable is True
+
+    @pytest.mark.asyncio
+    async def test_cancel_feed_not_found_is_non_retryable(self):
+        fake_client = AsyncMock()
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
+        ):
+            with pytest.raises(ApplicationError) as exc_info:
+                await cancel_feed(999)
+            assert exc_info.value.non_retryable is True
+
+    @pytest.mark.asyncio
+    async def test_get_feeder_status_not_found_is_non_retryable(self):
+        fake_client = AsyncMock()
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
+        ):
+            with pytest.raises(ApplicationError) as exc_info:
+                await get_feeder_status(999)
+            assert exc_info.value.non_retryable is True
+
+    @pytest.mark.asyncio
+    async def test_manual_feed_network_error_is_retryable(self):
+        """Transient errors propagate as-is for Temporal to retry."""
+        fake_client = AsyncMock()
+        fake_client.send_api_request.side_effect = ConnectionError("network down")
+        feeders = {100: _make_feeder(100)}
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+        ):
+            with pytest.raises(ConnectionError):
+                await manual_feed(ManualFeedInput(device_id=100, amount=10))
+
+    @pytest.mark.asyncio
+    async def test_get_feeder_status_network_error_is_retryable(self):
+        """Transient errors from get_client propagate for Temporal to retry."""
+        with patch(
+            "backend.temporal.activities.feeder_activities.get_client",
+            side_effect=ConnectionError("cannot connect"),
+        ):
+            with pytest.raises(ConnectionError):
+                await get_feeder_status(100)

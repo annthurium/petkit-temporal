@@ -44,7 +44,7 @@ async def manual_feed(input: ManualFeedInput) -> dict:
     feeders = get_feeders(client)
 
     if input.device_id not in feeders:
-        raise ApplicationError(f"Feeder {input.device_id} not found")
+        raise ApplicationError(f"Feeder {input.device_id} not found", non_retryable=True)
 
     payload = {}
     if input.amount is not None:
@@ -67,7 +67,7 @@ async def cancel_feed(device_id: int) -> dict:
     feeders = get_feeders(client)
 
     if device_id not in feeders:
-        raise ApplicationError(f"Feeder {device_id} not found")
+        raise ApplicationError(f"Feeder {device_id} not found", non_retryable=True)
 
     await client.send_api_request(device_id, FeederCommand.CANCEL_MANUAL_FEED, None)
     return {"status": "ok", "device_id": device_id}
@@ -80,7 +80,7 @@ async def get_feeder_status(device_id: int) -> FeederStatus:
     feeders = get_feeders(client)
 
     if device_id not in feeders:
-        raise ApplicationError(f"Feeder {device_id} not found")
+        raise ApplicationError(f"Feeder {device_id} not found", non_retryable=True)
 
     feeder = feeders[device_id]
     state = feeder.state

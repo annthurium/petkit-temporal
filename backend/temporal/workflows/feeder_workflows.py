@@ -2,6 +2,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from temporalio import workflow
+from temporalio.common import RetryPolicy
+
+ACTIVITY_RETRY_POLICY = RetryPolicy(
+    maximum_attempts=3,
+    backoff_coefficient=2.0,
+    initial_interval=timedelta(seconds=2),
+    maximum_interval=timedelta(seconds=30),
+)
 
 with workflow.unsafe.imports_passed_through():
     from zoneinfo import ZoneInfo
@@ -140,6 +148,7 @@ class DailyScheduledFeedingWorkflow:
                 get_feeder_status,
                 input.device_id,
                 start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=ACTIVITY_RETRY_POLICY,
             )
 
             # Skip if explicitly offline (None means unknown — don't skip)
@@ -156,6 +165,7 @@ class DailyScheduledFeedingWorkflow:
                 manual_feed,
                 feed_input,
                 start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=ACTIVITY_RETRY_POLICY,
             )
 
             self._feeding_count += 1
