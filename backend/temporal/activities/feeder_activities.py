@@ -19,6 +19,7 @@ class ManualFeedInput:
         Dual hopper: {"amount1": 3, "amount2": 2} dispenses 3 from hopper 1 and 2 from hopper 2
 
     All three fields are optional; the caller decides which to provide based on the feeder type.
+
     """
     device_id: int
     amount: int | None = None
@@ -44,6 +45,9 @@ async def manual_feed(input: ManualFeedInput) -> dict:
     feeders = get_feeders(client)
 
     if input.device_id not in feeders:
+        # petkit_entities dict is populated once, during app startup
+        # here we are fetching a specific device from that cached data
+        # if the device isn't in the dict, retries won't change the result
         raise ApplicationError(f"Feeder {input.device_id} not found", non_retryable=True)
 
     payload = {}
@@ -67,6 +71,9 @@ async def cancel_feed(device_id: int) -> dict:
     feeders = get_feeders(client)
 
     if device_id not in feeders:
+        # petkit_entities dict is populated once, during app startup
+        # here we are fetching a specific device from that cached data
+        # if the device isn't in the dict, retries won't change the result
         raise ApplicationError(f"Feeder {device_id} not found", non_retryable=True)
 
     await client.send_api_request(device_id, FeederCommand.CANCEL_MANUAL_FEED, None)
@@ -80,6 +87,9 @@ async def get_feeder_status(device_id: int) -> FeederStatus:
     feeders = get_feeders(client)
 
     if device_id not in feeders:
+        # petkit_entities dict is populated once, during app startup
+        # here we are fetching a specific device from that cached data
+        # if the device isn't in the dict, retries won't change the result
         raise ApplicationError(f"Feeder {device_id} not found", non_retryable=True)
 
     feeder = feeders[device_id]
