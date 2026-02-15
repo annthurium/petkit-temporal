@@ -364,7 +364,7 @@ async def set_schedule(device_id: int, req: ScheduleRequest):
         handle = temporal_client.get_workflow_handle(workflow_id)
         await handle.cancel()
     except RPCError:
-        pass  # No existing workflow, that's fine
+        pass  # No existing workflow, life goes on 😎
 
     await temporal_client.start_workflow(
         DailyScheduledFeedingWorkflow.run,
@@ -402,6 +402,6 @@ async def delete_schedule(device_id: int):
         handle = temporal_client.get_workflow_handle(workflow_id)
         await handle.cancel()
     except RPCError:
-        pass  # No workflow running, that's fine
+        pass  # No workflow running! if it ain't broke don't fix it 
 
     return {"status": "ok"}
