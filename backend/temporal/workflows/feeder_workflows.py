@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -108,11 +109,17 @@ class DailyScheduledFeedingWorkflow:
                 f"{next_time.strftime('%Y-%m-%d %H:%M')}"
             )
 
-            # Wait until scheduled time, or until a manual feed is requested
-            await workflow.wait_condition(
-                lambda: self._manual_feed_request is not None,
-                timeout=wait_duration,
-            )
+            # Wait until scheduled time, or until a manual feed is requested.
+            # wait_condition raises asyncio.TimeoutError when the timeout
+            # expires (i.e. no manual feed signal arrived), which means the
+            # scheduled feed time has been reached.
+            try:
+                await workflow.wait_condition(
+                    lambda: self._manual_feed_request is not None,
+                    timeout=wait_duration,
+                )
+            except asyncio.TimeoutError:
+                pass
 
             # Determine feed amounts - manual request overrides scheduled
             if self._manual_feed_request is not None:
