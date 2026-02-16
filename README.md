@@ -6,7 +6,7 @@ Note: due to PetKit's janky authentication supporting only once device at a time
 
 ## Stack
 
-- **Backend:** Python / FastAPI, using [pypetkitapi](https://github.com/Jezza34000/py-petkit-api) for PetKit cloud communication
+- **Backend:** Python / FastAPI, using [pypetkitapi](https://github.com/Jezza34000/py-petkit-api) for PetKit cloud communication. Temporal for managing application state and async workflows.
 - **Frontend:** React + TypeScript + Vite, styled with Tailwind CSS
 
 ## Setup

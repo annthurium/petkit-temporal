@@ -83,7 +83,10 @@ class DailyScheduledFeedingWorkflow:
         check that fails with Temporal's sandboxed _RestrictedProxy objects.
         Instead, we call tz.utcoffset() (a Python method the proxy can forward)
         and apply the offset manually.
-        TODO: Is this the correct approach? double check the Temporal docs.
+
+        This method doesn't account for daylight savings time transitions.
+        Although bunnies don't understand DST, they will just have to wait an extra hour once a year.
+        We all have hardships in life.
         """
         tz = ZoneInfo(timezone_str)
         utc_now = workflow.now()
