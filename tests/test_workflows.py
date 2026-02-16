@@ -25,6 +25,7 @@ from backend.temporal.workflows.feeder_workflows import (
     ACTIVITY_RETRY_POLICY,
     DailyScheduledFeedingInput,
     DailyScheduledFeedingWorkflow,
+    FeedingScheduleStatus,
     ManualFeedSignal,
 )
 
@@ -220,13 +221,13 @@ class TestDailyScheduledFeedingWorkflowUnit:
     def test_status_query(self):
         wf = DailyScheduledFeedingWorkflow()
         status = wf.status()
-        assert status == {
-            "feeding_count": 0,
-            "skip_next_scheduled": False,
-            "amount": 0,
-            "hour": 0,
-            "minute": 0,
-        }
+        assert status == FeedingScheduleStatus(
+            feeding_count=0,
+            skip_next_scheduled=False,
+            amount=0,
+            hour=0,
+            minute=0,
+        )
 
     def test_status_reflects_state_changes(self):
         wf = DailyScheduledFeedingWorkflow()
@@ -236,13 +237,13 @@ class TestDailyScheduledFeedingWorkflowUnit:
         wf._hour = 8
         wf._minute = 30
         status = wf.status()
-        assert status == {
-            "feeding_count": 3,
-            "skip_next_scheduled": True,
-            "amount": 15,
-            "hour": 8,
-            "minute": 30,
-        }
+        assert status == FeedingScheduleStatus(
+            feeding_count=3,
+            skip_next_scheduled=True,
+            amount=15,
+            hour=8,
+            minute=30,
+        )
 
 
 # ---------------------------------------------------------------------------

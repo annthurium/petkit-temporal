@@ -35,6 +35,15 @@ class ManualFeedSignal:
 
 
 @dataclass
+class FeedingScheduleStatus:
+    feeding_count: int
+    skip_next_scheduled: bool
+    amount: int
+    hour: int
+    minute: int
+
+
+@dataclass
 class DailyScheduledFeedingInput:
     device_id: int
     amount: int
@@ -210,12 +219,12 @@ class DailyScheduledFeedingWorkflow:
         self._manual_feed_request = request
 
     @workflow.query
-    def status(self) -> dict:
+    def status(self) -> FeedingScheduleStatus:
         """Get current workflow status."""
-        return {
-            "feeding_count": self._feeding_count,
-            "skip_next_scheduled": self._skip_next_scheduled,
-            "amount": self._amount,
-            "hour": self._hour,
-            "minute": self._minute,
-        }
+        return FeedingScheduleStatus(
+            feeding_count=self._feeding_count,
+            skip_next_scheduled=self._skip_next_scheduled,
+            amount=self._amount,
+            hour=self._hour,
+            minute=self._minute,
+        )

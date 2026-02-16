@@ -329,12 +329,12 @@ async def get_schedule(device_id: int):
             return None
         result = await handle.query(DailyScheduledFeedingWorkflow.status)
         return {
-            "time": f"{result['hour']:02d}:{result['minute']:02d}",
-            "amount": result["amount"],
-            "skip_next": result["skip_next_scheduled"],
+            "time": f"{result.hour:02d}:{result.minute:02d}",
+            "amount": result.amount,
+            "skip_next": result.skip_next_scheduled,
             "running": True,
             "workflow_id": workflow_id,
-            "feeding_count": result["feeding_count"],
+            "feeding_count": result.feeding_count,
         }
     except RPCError:
         return None
