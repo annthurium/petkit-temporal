@@ -229,16 +229,6 @@ async def manual_feed_endpoint(device_id: int, req: ManualFeedRequest):
     return {"status": "ok", "via": "direct"}
 
 
-@router.post("/{device_id}/feed/cancel")
-async def cancel_feed(device_id: int):
-    client = await get_client()
-    feeders = get_feeders(client)
-    if device_id not in feeders:
-        raise HTTPException(404, "Feeder not found")
-    await client.send_api_request(device_id, FeederCommand.CANCEL_MANUAL_FEED, None)
-    return {"status": "ok"}
-
-
 class UpdateSettingsRequest(BaseModel):
     settings: dict
 

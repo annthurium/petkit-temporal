@@ -96,7 +96,7 @@ backend/
     workflows/
       feeder_workflows.py  # DailyScheduledFeedingWorkflow
     activities/
-      feeder_activities.py # manual_feed, cancel_feed, get_feeder_status
+      feeder_activities.py # manual_feed, get_feeder_status
 frontend/
   src/
     App.tsx          # Root component

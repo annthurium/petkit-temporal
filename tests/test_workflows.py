@@ -18,7 +18,6 @@ from backend.temporal.activities.feeder_activities import (
     ManualFeedInput,
     FeederStatus,
     manual_feed,
-    cancel_feed,
     get_feeder_status,
 )
 from backend.temporal.workflows.feeder_workflows import (
@@ -85,34 +84,6 @@ class TestManualFeedActivity:
         ):
             with pytest.raises(ApplicationError, match="not found"):
                 await manual_feed(ManualFeedInput(device_id=999, amount=10))
-
-
-# ---------------------------------------------------------------------------
-# Activity: cancel_feed
-# ---------------------------------------------------------------------------
-
-class TestCancelFeedActivity:
-    @pytest.mark.asyncio
-    async def test_cancels_feed(self):
-        fake_client = AsyncMock()
-        feeders = {100: _make_feeder(100)}
-        with (
-            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
-            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
-        ):
-            result = await cancel_feed(100)
-            assert result == {"status": "ok", "device_id": 100}
-            fake_client.send_api_request.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_raises_for_unknown_feeder(self):
-        fake_client = AsyncMock()
-        with (
-            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
-            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
-        ):
-            with pytest.raises(ApplicationError, match="not found"):
-                await cancel_feed(999)
 
 
 # ---------------------------------------------------------------------------
@@ -281,17 +252,6 @@ class TestApplicationErrorRetryBehavior:
         ):
             with pytest.raises(ApplicationError) as exc_info:
                 await manual_feed(ManualFeedInput(device_id=999, amount=10))
-            assert exc_info.value.non_retryable is True
-
-    @pytest.mark.asyncio
-    async def test_cancel_feed_not_found_is_non_retryable(self):
-        fake_client = AsyncMock()
-        with (
-            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
-            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
-        ):
-            with pytest.raises(ApplicationError) as exc_info:
-                await cancel_feed(999)
             assert exc_info.value.non_retryable is True
 
     @pytest.mark.asyncio

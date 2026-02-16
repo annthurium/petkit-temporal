@@ -198,24 +198,6 @@ class TestManualFeed:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/feeders/{device_id}/feed/cancel
-# ---------------------------------------------------------------------------
-
-class TestCancelFeed:
-    @pytest.mark.asyncio
-    async def test_cancels_feed(self, client, fake_client):
-        resp = await client.post("/api/feeders/1/feed/cancel")
-        assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
-        fake_client.send_api_request.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_404_for_unknown(self, client):
-        resp = await client.post("/api/feeders/999/feed/cancel")
-        assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
 # Schedule CRUD: GET / PUT / DELETE /api/feeders/{device_id}/schedule
 # ---------------------------------------------------------------------------
 

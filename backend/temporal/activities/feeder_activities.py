@@ -63,24 +63,6 @@ async def manual_feed(input: ManualFeedInput) -> dict:
 
 
 @activity.defn
-async def cancel_feed(device_id: int) -> dict:
-    """Cancel an in-progress manual feed."""
-    from pypetkitapi.command import FeederCommand
-
-    client = await get_client()
-    feeders = get_feeders(client)
-
-    if device_id not in feeders:
-        # petkit_entities dict is populated once, during app startup
-        # here we are fetching a specific device from that cached data
-        # if the device isn't in the dict, retries won't change the result
-        raise ApplicationError(f"Feeder {device_id} not found", non_retryable=True)
-
-    await client.send_api_request(device_id, FeederCommand.CANCEL_MANUAL_FEED, None)
-    return {"status": "ok", "device_id": device_id}
-
-
-@activity.defn
 async def get_feeder_status(device_id: int) -> FeederStatus:
     """Get current status of a feeder device."""
     client = await get_client()

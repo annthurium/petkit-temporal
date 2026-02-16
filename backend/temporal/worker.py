@@ -16,7 +16,6 @@ from backend.config import TEMPORAL_HOST, TEMPORAL_TASK_QUEUE
 from backend.temporal.client import get_temporal_client
 from backend.temporal.activities.feeder_activities import (
     manual_feed,
-    cancel_feed,
     get_feeder_status,
 )
 from backend.temporal.workflows.feeder_workflows import DailyScheduledFeedingWorkflow
@@ -32,7 +31,7 @@ async def run_worker() -> None:
         client,
         task_queue=TEMPORAL_TASK_QUEUE,
         workflows=[DailyScheduledFeedingWorkflow],
-        activities=[manual_feed, cancel_feed, get_feeder_status],
+        activities=[manual_feed, get_feeder_status],
     )
 
     print("Worker started. Press Ctrl+C to stop.")
