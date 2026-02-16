@@ -12,6 +12,11 @@ ACTIVITY_RETRY_POLICY = RetryPolicy(
     maximum_interval=timedelta(seconds=30),
 )
 
+# Continue-as-new after this many loop iterations to prevent unbounded event
+# history growth. Each iteration adds ~2-6 events (timers + activities), so
+# 100 iterations stays well under Temporal's 50k event limit.
+CONTINUE_AS_NEW_AFTER_ITERATIONS = 100
+
 with workflow.unsafe.imports_passed_through():
     from zoneinfo import ZoneInfo
 
@@ -37,6 +42,9 @@ class DailyScheduledFeedingInput:
     minute: int = 0  # 0-59
     timezone: str = "America/Los_Angeles"
     max_feedings: int | None = None
+    # Carried across continue-as-new boundaries to preserve logical state
+    initial_feeding_count: int = 0
+    initial_skip_next: bool = False
 
 
 @workflow.defn
@@ -58,6 +66,7 @@ class DailyScheduledFeedingWorkflow:
         self._amount: int = 0
         self._hour: int = 0
         self._minute: int = 0
+        self._iterations: int = 0
 
     def _to_local_naive(self, timezone_str: str):
         """Convert workflow.now() (UTC) to a naive local datetime.
@@ -90,14 +99,33 @@ class DailyScheduledFeedingWorkflow:
         self._amount = input.amount
         self._hour = input.hour
         self._minute = input.minute
+        self._feeding_count = input.initial_feeding_count
+        self._skip_next_scheduled = input.initial_skip_next
 
         while True:
+            self._iterations += 1
+
             # Check if we've reached max feedings
-            if input.max_feedings and self._feeding_count >= input.max_feedings:
+            if input.max_feedings is not None and self._feeding_count >= input.max_feedings:
                 return {
                     "status": "completed",
                     "total_feedings": self._feeding_count,
                 }
+
+            # Reset event history periodically to prevent unbounded growth
+            if self._iterations >= CONTINUE_AS_NEW_AFTER_ITERATIONS:
+                workflow.continue_as_new(
+                    DailyScheduledFeedingInput(
+                        device_id=input.device_id,
+                        amount=self._amount,
+                        hour=self._hour,
+                        minute=self._minute,
+                        timezone=input.timezone,
+                        max_feedings=input.max_feedings,
+                        initial_feeding_count=self._feeding_count,
+                        initial_skip_next=self._skip_next_scheduled,
+                    )
+                )
 
             # Calculate wait duration until next scheduled feeding
             wait_duration = self._get_wait_duration(input)
