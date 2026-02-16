@@ -335,7 +335,6 @@ async def get_schedule(device_id: int):
             "running": True,
             "workflow_id": workflow_id,
             "feeding_count": result["feeding_count"],
-            "paused": result["paused"],
         }
     except RPCError:
         return None

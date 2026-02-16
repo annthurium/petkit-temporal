@@ -208,20 +208,8 @@ class TestDailyScheduledFeedingWorkflowUnit:
     def test_initial_state(self):
         wf = DailyScheduledFeedingWorkflow()
         assert wf._feeding_count == 0
-        assert wf._paused is False
         assert wf._manual_feed_request is None
         assert wf._skip_next_scheduled is False
-
-    def test_pause_signal(self):
-        wf = DailyScheduledFeedingWorkflow()
-        wf.pause()
-        assert wf._paused is True
-
-    def test_resume_signal(self):
-        wf = DailyScheduledFeedingWorkflow()
-        wf.pause()
-        wf.resume()
-        assert wf._paused is False
 
     def test_manual_feed_now_signal(self):
         wf = DailyScheduledFeedingWorkflow()
@@ -234,7 +222,6 @@ class TestDailyScheduledFeedingWorkflowUnit:
         status = wf.status()
         assert status == {
             "feeding_count": 0,
-            "paused": False,
             "skip_next_scheduled": False,
             "amount": 0,
             "hour": 0,
@@ -244,7 +231,6 @@ class TestDailyScheduledFeedingWorkflowUnit:
     def test_status_reflects_state_changes(self):
         wf = DailyScheduledFeedingWorkflow()
         wf._feeding_count = 3
-        wf._paused = True
         wf._skip_next_scheduled = True
         wf._amount = 15
         wf._hour = 8
@@ -252,7 +238,6 @@ class TestDailyScheduledFeedingWorkflowUnit:
         status = wf.status()
         assert status == {
             "feeding_count": 3,
-            "paused": True,
             "skip_next_scheduled": True,
             "amount": 15,
             "hour": 8,

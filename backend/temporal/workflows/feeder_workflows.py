@@ -53,7 +53,6 @@ class DailyScheduledFeedingWorkflow:
 
     def __init__(self) -> None:
         self._feeding_count = 0
-        self._paused = False
         self._manual_feed_request: ManualFeedSignal | None = None
         self._skip_next_scheduled: bool = False
         self._amount: int = 0
@@ -134,11 +133,7 @@ class DailyScheduledFeedingWorkflow:
                 # Skip the next scheduled feed since we just fed manually
                 self._skip_next_scheduled = True
             else:
-                # Scheduled feed time reached
-                if self._paused:
-                    continue
-
-                # Skip this scheduled feed if a manual feed was recently done
+                # Scheduled feed time reached — skip if a manual feed was recently done
                 if self._skip_next_scheduled:
                     workflow.logger.info(
                         f"Skipping scheduled feed for device {input.device_id} "
@@ -182,16 +177,6 @@ class DailyScheduledFeedingWorkflow:
             )
 
     @workflow.signal
-    def pause(self) -> None:
-        """Pause the feeding schedule."""
-        self._paused = True
-
-    @workflow.signal
-    def resume(self) -> None:
-        """Resume the feeding schedule."""
-        self._paused = False
-
-    @workflow.signal
     def manual_feed_now(self, request: ManualFeedSignal) -> None:
         """Request an immediate manual feed. The next scheduled feed will be skipped."""
         self._manual_feed_request = request
@@ -201,7 +186,6 @@ class DailyScheduledFeedingWorkflow:
         """Get current workflow status."""
         return {
             "feeding_count": self._feeding_count,
-            "paused": self._paused,
             "skip_next_scheduled": self._skip_next_scheduled,
             "amount": self._amount,
             "hour": self._hour,
