@@ -50,7 +50,6 @@ class DailyScheduledFeedingInput:
     hour: int  # 0-23, hour of day in the specified timezone
     minute: int = 0  # 0-59
     timezone: str = "America/Los_Angeles"
-    max_feedings: int | None = None
     # Carried across continue-as-new boundaries to preserve logical state
     initial_feeding_count: int = 0
     initial_skip_next: bool = False
@@ -114,13 +113,6 @@ class DailyScheduledFeedingWorkflow:
         while True:
             self._iterations += 1
 
-            # Check if we've reached max feedings
-            if input.max_feedings is not None and self._feeding_count >= input.max_feedings:
-                return {
-                    "status": "completed",
-                    "total_feedings": self._feeding_count,
-                }
-
             # Reset event history periodically to prevent unbounded growth
             if self._iterations >= CONTINUE_AS_NEW_AFTER_ITERATIONS:
                 workflow.continue_as_new(
@@ -130,7 +122,6 @@ class DailyScheduledFeedingWorkflow:
                         hour=self._hour,
                         minute=self._minute,
                         timezone=input.timezone,
-                        max_feedings=input.max_feedings,
                         initial_feeding_count=self._feeding_count,
                         initial_skip_next=self._skip_next_scheduled,
                     )

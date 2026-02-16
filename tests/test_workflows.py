@@ -192,7 +192,6 @@ class TestDataclasses:
         inp = DailyScheduledFeedingInput(device_id=1, amount=10, hour=7)
         assert inp.minute == 0
         assert inp.timezone == "America/Los_Angeles"
-        assert inp.max_feedings is None
 
     def test_manual_feed_signal_defaults(self):
         sig = ManualFeedSignal()
