@@ -178,7 +178,6 @@ class TestDataclasses:
 class TestDailyScheduledFeedingWorkflowUnit:
     def test_initial_state(self):
         wf = DailyScheduledFeedingWorkflow()
-        assert wf._feeding_count == 0
         assert wf._manual_feed_request is None
         assert wf._skip_next_scheduled is False
 
@@ -192,7 +191,6 @@ class TestDailyScheduledFeedingWorkflowUnit:
         wf = DailyScheduledFeedingWorkflow()
         status = wf.status()
         assert status == FeedingScheduleStatus(
-            feeding_count=0,
             skip_next_scheduled=False,
             amount=0,
             hour=0,
@@ -201,14 +199,12 @@ class TestDailyScheduledFeedingWorkflowUnit:
 
     def test_status_reflects_state_changes(self):
         wf = DailyScheduledFeedingWorkflow()
-        wf._feeding_count = 3
         wf._skip_next_scheduled = True
         wf._amount = 15
         wf._hour = 8
         wf._minute = 30
         status = wf.status()
         assert status == FeedingScheduleStatus(
-            feeding_count=3,
             skip_next_scheduled=True,
             amount=15,
             hour=8,

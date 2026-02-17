@@ -35,7 +35,6 @@ class ManualFeedSignal:
 
 @dataclass
 class FeedingScheduleStatus:
-    feeding_count: int
     skip_next_scheduled: bool
     amount: int
     hour: int
@@ -50,7 +49,6 @@ class DailyScheduledFeedingInput:
     minute: int = 0  # 0-59
     timezone: str = "America/Los_Angeles"
     # Carried across continue-as-new boundaries to preserve logical state
-    initial_feeding_count: int = 0
     initial_skip_next: bool = False
 
 
@@ -67,7 +65,6 @@ class DailyScheduledFeedingWorkflow:
     """
 
     def __init__(self) -> None:
-        self._feeding_count = 0
         self._manual_feed_request: ManualFeedSignal | None = None
         self._skip_next_scheduled: bool = False
         self._amount: int = 0
@@ -109,7 +106,6 @@ class DailyScheduledFeedingWorkflow:
         self._amount = input.amount
         self._hour = input.hour
         self._minute = input.minute
-        self._feeding_count = input.initial_feeding_count
         self._skip_next_scheduled = input.initial_skip_next
 
         while True:
@@ -124,7 +120,6 @@ class DailyScheduledFeedingWorkflow:
                         hour=self._hour,
                         minute=self._minute,
                         timezone=input.timezone,
-                        initial_feeding_count=self._feeding_count,
                         initial_skip_next=self._skip_next_scheduled,
                     )
                 )
@@ -182,10 +177,9 @@ class DailyScheduledFeedingWorkflow:
                 retry_policy=ACTIVITY_RETRY_POLICY,
             )
 
-            self._feeding_count += 1
             feed_type = "Manual" if is_manual else "Scheduled"
             workflow.logger.info(
-                f"{feed_type} feeding #{self._feeding_count} completed for device {input.device_id}"
+                f"{feed_type} feeding completed for device {input.device_id}"
             )
 
     @workflow.signal
@@ -197,7 +191,6 @@ class DailyScheduledFeedingWorkflow:
     def status(self) -> FeedingScheduleStatus:
         """Get current workflow status."""
         return FeedingScheduleStatus(
-            feeding_count=self._feeding_count,
             skip_next_scheduled=self._skip_next_scheduled,
             amount=self._amount,
             hour=self._hour,
