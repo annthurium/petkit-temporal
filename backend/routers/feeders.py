@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from pypetkitapi.command import DeviceCommand, FeederCommand
 from pypetkitapi.const import PetkitEndpoint
+from temporalio.client import WorkflowExecutionStatus
 from temporalio.common import RetryPolicy
 from temporalio.service import RPCError
 
@@ -334,7 +335,7 @@ async def get_schedule(device_id: int):
 async def set_schedule(device_id: int, req: ScheduleRequest):
     """Start a Temporal workflow for scheduled daily feeding.
 
-    If a workflow is already running for this device, it is cancelled first.
+    If a workflow is already running for this device, it is terminated first.
     """
     petkit_client = await get_client()
     feeders = get_feeders(petkit_client)
@@ -349,10 +350,12 @@ async def set_schedule(device_id: int, req: ScheduleRequest):
     temporal_client = await get_temporal_client()
     workflow_id = f"scheduled-feeding-{device_id}"
 
-    # Cancel any existing workflow for this device
+    # Terminate any existing workflow for this device
     try:
         handle = temporal_client.get_workflow_handle(workflow_id)
-        await handle.cancel()
+        desc = await handle.describe()
+        if desc.status == WorkflowExecutionStatus.RUNNING:
+            await handle.terminate("Replaced by new schedule")
     except RPCError:
         pass  # No existing workflow, life goes on 😎
 

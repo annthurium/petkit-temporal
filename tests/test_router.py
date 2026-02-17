@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from temporalio.client import WorkflowExecutionStatus
 from temporalio.service import RPCError
 
 from backend.main import app
@@ -217,6 +218,20 @@ class TestScheduleCRUD:
         assert body["amount"] == 20
         assert body["skip_next"] is False
         assert body["workflow_id"] == "scheduled-feeding-1"
+        mock_temporal_client.start_workflow.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_put_terminates_existing_workflow(self, client, mock_temporal_client):
+        """When a workflow is already running, terminate it before starting a new one."""
+        handle = mock_temporal_client.get_workflow_handle.return_value
+        desc = MagicMock()
+        desc.status = WorkflowExecutionStatus.RUNNING
+        handle.describe = AsyncMock(return_value=desc)
+        handle.terminate = AsyncMock()
+
+        resp = await client.put("/api/feeders/1/schedule", json={"time": "08:00", "amount": 15})
+        assert resp.status_code == 200
+        handle.terminate.assert_awaited_once()
         mock_temporal_client.start_workflow.assert_awaited_once()
 
     @pytest.mark.asyncio
