@@ -96,7 +96,7 @@ backend/
     workflows/
       feeder_workflows.py  # DailyScheduledFeedingWorkflow
     activities/
-      feeder_activities.py # manual_feed, get_feeder_status
+      feeder_activities.py # manual_feed
 frontend/
   src/
     App.tsx          # Root component
@@ -105,5 +105,4 @@ frontend/
 tests/
   test_workflows.py  # Activity and workflow unit tests
   test_router.py     # Router/endpoint integration tests
-  test_retry.py      # Retry logic tests
 ```
