@@ -28,8 +28,8 @@ class ManualFeedInput:
 
 
 @activity.defn
-async def manual_feed(input: ManualFeedInput) -> dict:
-    """Trigger a manual feed on a feeder device."""
+async def trigger_feed(input: ManualFeedInput) -> dict:
+    """Trigger a feeding on a feeder device."""
     from pypetkitapi.command import FeederCommand
 
     client = await get_client()

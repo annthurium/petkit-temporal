@@ -19,7 +19,7 @@ from temporalio.exceptions import ApplicationError
 
 from backend.temporal.activities.feeder_activities import (
     ManualFeedInput,
-    manual_feed,
+    trigger_feed,
 )
 from backend.temporal.workflows.feeder_workflows import (
     ACTIVITY_RETRY_POLICY,
@@ -44,10 +44,10 @@ def _make_feeder(device_id=100, name="TestFeeder", online=True, error_msg=None, 
 
 
 # ---------------------------------------------------------------------------
-# Activity: manual_feed
+# Activity: trigger_feed
 # ---------------------------------------------------------------------------
 
-class TestManualFeedActivity:
+class TestTriggerFeedActivity:
     @pytest.mark.asyncio
     async def test_sends_single_hopper_feed(self):
         fake_client = AsyncMock()
@@ -56,7 +56,7 @@ class TestManualFeedActivity:
             patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
             patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
         ):
-            result = await manual_feed(ManualFeedInput(device_id=100, amount=10))
+            result = await trigger_feed(ManualFeedInput(device_id=100, amount=10))
             assert result == {"status": "ok", "device_id": 100}
             fake_client.send_api_request.assert_awaited_once()
             call_args = fake_client.send_api_request.call_args[0]
@@ -71,7 +71,7 @@ class TestManualFeedActivity:
             patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
             patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
         ):
-            result = await manual_feed(ManualFeedInput(device_id=100, amount1=5, amount2=3))
+            result = await trigger_feed(ManualFeedInput(device_id=100, amount1=5, amount2=3))
             assert result == {"status": "ok", "device_id": 100}
             call_args = fake_client.send_api_request.call_args[0]
             assert call_args[2] == {"amount1": 5, "amount2": 3}
@@ -84,7 +84,7 @@ class TestManualFeedActivity:
             patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
         ):
             with pytest.raises(ApplicationError, match="not found"):
-                await manual_feed(ManualFeedInput(device_id=999, amount=10))
+                await trigger_feed(ManualFeedInput(device_id=999, amount=10))
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ class TestManualFeedActivity:
 # ---------------------------------------------------------------------------
 
 class TestDataclasses:
-    def test_manual_feed_input_defaults(self):
+    def test_trigger_feed_input_defaults(self):
         inp = ManualFeedInput(device_id=1)
         assert inp.amount is None
         assert inp.amount1 is None
@@ -179,18 +179,18 @@ class TestApplicationErrorRetryBehavior:
     """
 
     @pytest.mark.asyncio
-    async def test_manual_feed_not_found_is_non_retryable(self):
+    async def test_trigger_feed_not_found_is_non_retryable(self):
         fake_client = AsyncMock()
         with (
             patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
             patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
         ):
             with pytest.raises(ApplicationError) as exc_info:
-                await manual_feed(ManualFeedInput(device_id=999, amount=10))
+                await trigger_feed(ManualFeedInput(device_id=999, amount=10))
             assert exc_info.value.non_retryable is True
 
     @pytest.mark.asyncio
-    async def test_manual_feed_network_error_is_retryable(self):
+    async def test_trigger_feed_network_error_is_retryable(self):
         """Transient errors propagate as-is for Temporal to retry."""
         fake_client = AsyncMock()
         fake_client.send_api_request.side_effect = ConnectionError("network down")
@@ -200,7 +200,7 @@ class TestApplicationErrorRetryBehavior:
             patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
         ):
             with pytest.raises(ConnectionError):
-                await manual_feed(ManualFeedInput(device_id=100, amount=10))
+                await trigger_feed(ManualFeedInput(device_id=100, amount=10))
 
 
 # ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ with workflow.unsafe.imports_passed_through():
 
     from backend.temporal.activities.feeder_activities import (
         ManualFeedInput,
-        manual_feed,
+        trigger_feed,
     )
 
 
@@ -171,7 +171,7 @@ class DailyScheduledFeedingWorkflow:
                 is_manual = False
 
             await workflow.execute_activity(
-                manual_feed,
+                trigger_feed,
                 feed_input,
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=ACTIVITY_RETRY_POLICY,
