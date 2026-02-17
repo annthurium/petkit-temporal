@@ -23,7 +23,6 @@ with workflow.unsafe.imports_passed_through():
     from backend.temporal.activities.feeder_activities import (
         ManualFeedInput,
         manual_feed,
-        get_feeder_status,
     )
 
 
@@ -176,24 +175,6 @@ class DailyScheduledFeedingWorkflow:
                 feed_input = ManualFeedInput(device_id=input.device_id, amount=input.amount)
                 is_manual = False
 
-            # Check feeder status before feeding
-            status = await workflow.execute_activity(
-                get_feeder_status,
-                input.device_id,
-                start_to_close_timeout=timedelta(seconds=30),
-                retry_policy=ACTIVITY_RETRY_POLICY,
-            )
-
-            # Skip if explicitly offline (None means unknown — don't skip)
-            if status.online is False:
-                workflow.logger.warning(f"Feeder {input.device_id} is offline, skipping")
-                continue
-
-            if status.error_msg:
-                workflow.logger.warning(f"Feeder has error: {status.error_msg}")
-                continue
-
-            # Execute the feeding
             await workflow.execute_activity(
                 manual_feed,
                 feed_input,

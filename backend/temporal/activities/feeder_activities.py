@@ -27,15 +27,6 @@ class ManualFeedInput:
     amount2: int | None = None
 
 
-@dataclass
-class FeederStatus:
-    device_id: int
-    name: str
-    food: int | None
-    online: bool | None
-    error_msg: str | None
-
-
 @activity.defn
 async def manual_feed(input: ManualFeedInput) -> dict:
     """Trigger a manual feed on a feeder device."""
@@ -60,28 +51,3 @@ async def manual_feed(input: ManualFeedInput) -> dict:
 
     await client.send_api_request(input.device_id, FeederCommand.MANUAL_FEED, payload)
     return {"status": "ok", "device_id": input.device_id}
-
-
-@activity.defn
-async def get_feeder_status(device_id: int) -> FeederStatus:
-    """Get current status of a feeder device."""
-    client = await get_client()
-    feeders = get_feeders(client)
-
-    if device_id not in feeders:
-        # petkit_entities dict is populated once, during app startup
-        # here we are fetching a specific device from that cached data
-        # if the device isn't in the dict, retries won't change the result
-        raise ApplicationError(f"Feeder {device_id} not found", non_retryable=True)
-
-    feeder = feeders[device_id]
-    state = feeder.state
-
-    wifi = getattr(state, "wifi", None) if state else None
-    return FeederStatus(
-        device_id=device_id,
-        name=feeder.name,
-        food=getattr(state, "food", None) if state else None,
-        online=bool(wifi) if wifi is not None else None,
-        error_msg=getattr(state, "error_msg", None) if state else None,
-    )
