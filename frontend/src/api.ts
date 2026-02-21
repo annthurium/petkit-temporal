@@ -92,11 +92,19 @@ export interface FeedAlert {
   timestamp: string;
 }
 
+export interface FeedResult {
+  status: 'success' | 'failure' | 'unknown';
+  feed_type: 'scheduled' | 'manual';
+  message: string;
+  timestamp: string;
+}
+
 export interface FeedSchedule {
   time: string;
   amount: number;
   skip_next: boolean;
   last_alert: FeedAlert | null;
+  last_feed_result: FeedResult | null;
 }
 
 export const fetchSchedule = (id: number) => api.get<FeedSchedule | null>(`/feeders/${id}/schedule`).then(r => r.data);

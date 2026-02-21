@@ -1,3 +1,4 @@
+from dataclasses import asdict
 from datetime import datetime, timedelta
 from http import HTTPMethod
 
@@ -213,6 +214,7 @@ async def manual_feed_endpoint(device_id: int, req: ManualFeedRequest):
         return {"status": "ok", "via": "workflow"}
     except RPCError:
         # No workflow running for this device, fall back to direct API call
+        logger.warning("No Temporal workfow running for device, falling back to direct PetKit API call")
         pass
     except Exception as e:
         logger.warning("Unexpected error signaling workflow: %s: %s", type(e).__name__, e)
@@ -227,6 +229,7 @@ async def manual_feed_endpoint(device_id: int, req: ManualFeedRequest):
         payload["amount2"] = req.amount2
 
     await petkit_client.send_api_request(device_id, FeederCommand.MANUAL_FEED, payload)
+    logger.warning("fallback to direct api call")
     return {"status": "ok", "via": "direct"}
 
 
@@ -319,6 +322,7 @@ async def get_schedule(device_id: int):
         if desc.status is not None and desc.status.name != "RUNNING":
             return None
         result = await handle.query(DailyScheduledFeedingWorkflow.status)
+        last_feed_result = asdict(result.last_feed_result) if result.last_feed_result else None
         return {
             "time": f"{result.hour:02d}:{result.minute:02d}",
             "amount": result.amount,
@@ -326,6 +330,7 @@ async def get_schedule(device_id: int):
             "running": True,
             "workflow_id": workflow_id,
             "last_alert": result.last_alert,
+            "last_feed_result": last_feed_result,
         }
     except RPCError:
         return None
@@ -383,6 +388,8 @@ async def set_schedule(device_id: int, req: ScheduleRequest):
         "amount": req.amount,
         "skip_next": False,
         "workflow_id": workflow_id,
+        "last_alert": None,
+        "last_feed_result": None,
     }
 
 

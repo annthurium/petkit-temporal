@@ -98,12 +98,46 @@ export default function FeedSchedulePanel({ feederId }: Props) {
           {schedule.skip_next && (
             <p className="text-sm text-neon-pink">Next feeding will be skipped (manual feed detected)</p>
           )}
-          {schedule.last_alert && (
-            <div className="mt-3 p-3 rounded-lg bg-vapor-danger/10 border border-vapor-danger/30 space-y-1">
-              <p className="text-sm font-semibold text-vapor-danger">Feed Alert</p>
-              <p className="text-sm text-vapor-danger">{schedule.last_alert.reason}</p>
+          {schedule.last_feed_result && (
+            <div
+              className={`mt-3 p-3 rounded-lg space-y-1 border ${
+                schedule.last_feed_result.status === 'success'
+                  ? 'bg-vapor-success/10 border-vapor-success/30'
+                  : schedule.last_feed_result.status === 'failure'
+                    ? 'bg-vapor-danger/10 border-vapor-danger/30'
+                    : 'bg-neon-cyan/10 border-neon-cyan/30'
+              }`}
+            >
+              <p
+                className={`text-sm font-semibold ${
+                  schedule.last_feed_result.status === 'success'
+                    ? 'text-vapor-success'
+                    : schedule.last_feed_result.status === 'failure'
+                      ? 'text-vapor-danger'
+                      : 'text-neon-cyan'
+                }`}
+              >
+                Most Recent Feed: {
+                  schedule.last_feed_result.status === 'success'
+                    ? 'Success'
+                    : schedule.last_feed_result.status === 'failure'
+                      ? 'Failed'
+                      : 'Unconfirmed'
+                }
+              </p>
+              <p
+                className={`text-sm ${
+                  schedule.last_feed_result.status === 'success'
+                    ? 'text-vapor-success'
+                    : schedule.last_feed_result.status === 'failure'
+                      ? 'text-vapor-danger'
+                      : 'text-neon-cyan'
+                }`}
+              >
+                {schedule.last_feed_result.message}
+              </p>
               <p className="text-xs text-vapor-muted">
-                {new Date(schedule.last_alert.timestamp).toLocaleString()}
+                {new Date(schedule.last_feed_result.timestamp).toLocaleString()}
               </p>
             </div>
           )}

@@ -12,6 +12,8 @@ ACTIVITY_RETRY_POLICY = RetryPolicy(
     initial_interval=timedelta(seconds=2),
     maximum_interval=timedelta(seconds=30),
 )
+VERIFY_CONFIRMATION_ATTEMPTS = 4
+VERIFY_CONFIRMATION_INTERVAL_SECONDS = 10
 
 # TODO: should I add a separate retry policy for feeding? 
 # Increase backoff interval, maybe try a few more times
@@ -50,6 +52,15 @@ class FeedingScheduleStatus:
     hour: int
     minute: int
     last_alert: dict | None = None
+    last_feed_result: "FeedResultStatus | None" = None
+
+
+@dataclass
+class FeedResultStatus:
+    status: str  # "success" | "failure" | "unknown"
+    feed_type: str
+    message: str
+    timestamp: str
 
 
 @dataclass
@@ -62,6 +73,7 @@ class DailyScheduledFeedingInput:
     # Carried across continue-as-new boundaries to preserve logical state
     initial_skip_next: bool = False
     initial_last_alert: dict | None = None
+    initial_last_feed_result: FeedResultStatus | None = None
 
 
 @workflow.defn
@@ -84,6 +96,7 @@ class DailyScheduledFeedingWorkflow:
         self._minute: int = 0
         self._iterations: int = 0
         self._last_alert: dict | None = None
+        self._last_feed_result: FeedResultStatus | None = None
 
     def _to_local_naive(self, timezone_str: str):
         """Convert workflow.now() (UTC) to a naive local datetime.
@@ -121,6 +134,7 @@ class DailyScheduledFeedingWorkflow:
         self._minute = input.minute
         self._skip_next_scheduled = input.initial_skip_next
         self._last_alert = input.initial_last_alert
+        self._last_feed_result = input.initial_last_feed_result
 
         while True:
             self._iterations += 1
@@ -136,6 +150,7 @@ class DailyScheduledFeedingWorkflow:
                         timezone=input.timezone,
                         initial_skip_next=self._skip_next_scheduled,
                         initial_last_alert=self._last_alert,
+                        initial_last_feed_result=self._last_feed_result,
                     )
                 )
 
@@ -213,24 +228,52 @@ class DailyScheduledFeedingWorkflow:
 
                 # Brief delay to let the device process the command.
                 # PetKit's cloud API updates asynchronously after the command is sent.
-                await asyncio.sleep(5)
+                # TODO: make this a const at the top of the file, I no likey arbitrary magic numbers
+                await asyncio.sleep(12)
+                verify_not_before = workflow.now().isoformat()
 
-                # Step 2: Verify the feed was executed by the device
-                verify_result = await workflow.execute_activity(
-                    verify_feed,
-                    VerifyFeedInput(device_id=input.device_id),
-                    start_to_close_timeout=timedelta(seconds=30),
-                    retry_policy=ACTIVITY_RETRY_POLICY,
-                )
+                # Step 2: Verify the feed was executed by the device.
+                # Unknown results are retried for a bounded window.
+                # TODO: use Temporal's built in retry policy for this?
+                verify_result = None
+                for attempt in range(1, VERIFY_CONFIRMATION_ATTEMPTS + 1):
+                    verify_result = await workflow.execute_activity(
+                        verify_feed,
+                        VerifyFeedInput(
+                            device_id=input.device_id,
+                            not_before=verify_not_before,
+                        ),
+                        start_to_close_timeout=timedelta(seconds=30),
+                        retry_policy=ACTIVITY_RETRY_POLICY,
+                    )
+                    if verify_result.outcome != "unknown":
+                        break
+                    if attempt < VERIFY_CONFIRMATION_ATTEMPTS:
+                        await asyncio.sleep(VERIFY_CONFIRMATION_INTERVAL_SECONDS)
 
-                if verify_result.verified:
+                assert verify_result is not None
+                if verify_result.outcome == "verified":
                     workflow.logger.info(
                         f"{feed_type} feeding verified for device {input.device_id}"
                     )
                     self._last_alert = None
+                    self._last_feed_result = FeedResultStatus(
+                        status="success",
+                        feed_type=feed_type.lower(),
+                        message="Feed confirmed by device",
+                        timestamp=workflow.now().isoformat(),
+                    )
                     if is_manual:
                         # Only skip the next scheduled run after a successful manual feed.
                         self._skip_next_scheduled = True
+                elif verify_result.outcome == "unknown":
+                    self._last_alert = None
+                    self._last_feed_result = FeedResultStatus(
+                        status="unknown",
+                        feed_type=feed_type.lower(),
+                        message=verify_result.error_msg or "Feed status unconfirmed",
+                        timestamp=workflow.now().isoformat(),
+                    )
                 else:
                     failure_reason = (
                         verify_result.error_msg or "Feed not confirmed by device"
@@ -256,6 +299,12 @@ class DailyScheduledFeedingWorkflow:
                     "reason": alert.reason,
                     "timestamp": alert.timestamp,
                 }
+                self._last_feed_result = FeedResultStatus(
+                    status="failure",
+                    feed_type=feed_type.lower(),
+                    message=failure_reason,
+                    timestamp=alert.timestamp,
+                )
 
     @workflow.signal
     def manual_feed_now(self, request: ManualFeedSignal) -> None:
@@ -271,4 +320,5 @@ class DailyScheduledFeedingWorkflow:
             hour=self._hour,
             minute=self._minute,
             last_alert=self._last_alert,
+            last_feed_result=self._last_feed_result,
         )
