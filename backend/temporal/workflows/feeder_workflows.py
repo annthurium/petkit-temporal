@@ -241,6 +241,7 @@ class DailyScheduledFeedingWorkflow:
                         verify_feed,
                         VerifyFeedInput(
                             device_id=input.device_id,
+                            is_manual=is_manual,
                             not_before=verify_not_before,
                         ),
                         start_to_close_timeout=timedelta(seconds=30),

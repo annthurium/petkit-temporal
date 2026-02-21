@@ -69,6 +69,7 @@ async def trigger_feed(input: ManualFeedInput) -> dict:
 @dataclass
 class VerifyFeedInput:
     device_id: int
+    is_manual: bool = False
     not_before: str | None = None
 
 
@@ -146,10 +147,11 @@ class FeedAlert:
 async def verify_feed(input: VerifyFeedInput) -> VerifyFeedResult:
     """Verify that a feed command was actually executed by the device.
 
-    Refreshes device data from the PetKit cloud API and checks
-    manual_feed.is_executed. Some devices/API responses can omit manual_feed
-    briefly even when a feed succeeds, so this verifier falls back to feeder
-    online/error state to avoid false negatives.
+    The workflow passes is_manual to indicate the feed type (manual vs
+    scheduled) — PetKit sees all Temporal-triggered feeds as "manual".
+    Refreshes device data from the PetKit cloud API, checks device health,
+    and then consults execution confirmation (D4 feed records or
+    manual_feed.is_executed for other models).
     """
     client = await refresh_data()
     feeders = get_feeders(client)
@@ -175,46 +177,42 @@ async def verify_feed(input: VerifyFeedInput) -> VerifyFeedResult:
         if _is_after_threshold(latest_event, not_before):
             return VerifyFeedResult(outcome="verified", device_id=input.device_id)
 
-    # TODO: pass manual_feed variable from the Temporal workflow
-    # The feeder sees all feeds as manual feeds.
+    # Check device health before consulting feed execution status.
+    if is_online == 0:
+        return VerifyFeedResult(
+            outcome="failed",
+            device_id=input.device_id,
+            error_msg="Feeder is offline — check power and wifi connection",
+        )
+    if error_msg:
+        return VerifyFeedResult(
+            outcome="failed",
+            device_id=input.device_id,
+            error_msg=error_msg,
+        )
+
+    # The workflow tells us whether this was a manual or scheduled feed
+    # (via input.is_manual) — PetKit sees all Temporal-triggered feeds as
+    # "manual" anyway, so its manual_feed attribute is not useful for
+    # classification.  We still check the device's execution confirmation
+    # for non-D4 models.
     manual_feed = getattr(feeder, "manual_feed", None)
+    is_executed = getattr(manual_feed, "is_executed", None) if manual_feed else None
+
+    if is_executed == 1:
+        return VerifyFeedResult(outcome="verified", device_id=input.device_id)
 
     if manual_feed is None:
-        if is_online == 0:
-            msg = "Feeder is offline — check power and wifi connection"
-            return VerifyFeedResult(
-                outcome="failed",
-                device_id=input.device_id,
-                error_msg=msg,
-            )
-        if error_msg:
-            return VerifyFeedResult(
-                outcome="failed",
-                device_id=input.device_id,
-                error_msg=error_msg,
-            )
-        # Strict mode: absence of manual_feed metadata is inconclusive.
         return VerifyFeedResult(
             outcome="unknown",
             device_id=input.device_id,
             error_msg="Feed confirmation unavailable from device telemetry",
         )
 
-    is_executed = getattr(manual_feed, "is_executed", None)
-
-    if is_executed == 1:
-        # Non-D4 models expose execution status directly.
-        return VerifyFeedResult(outcome="verified", device_id=input.device_id)
-
-    if is_online == 0:
-        msg = "Feeder is offline — check power and wifi connection"
-    else:
-        msg = error_msg or "Feed was not confirmed by device"
-
     return VerifyFeedResult(
         outcome="failed",
         device_id=input.device_id,
-        error_msg=msg,
+        error_msg="Feed was not confirmed by device",
     )
 
 

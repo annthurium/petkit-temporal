@@ -538,7 +538,7 @@ class TestVerifyFeedActivity:
         fake_client = AsyncMock()
         feeder = SimpleNamespace(
             id=100,
-            manual_feed=None,
+            manual_feed=SimpleNamespace(is_executed=0),
             state=SimpleNamespace(online=0, error_msg=None),
         )
         with (
