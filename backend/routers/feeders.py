@@ -1,18 +1,16 @@
 from dataclasses import asdict
-from datetime import datetime, timedelta
-from http import HTTPMethod
+from datetime import timedelta
 
 import logging
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from pypetkitapi.command import DeviceCommand, FeederCommand
-from pypetkitapi.const import PetkitEndpoint
 from temporalio.client import WorkflowExecutionStatus
 from temporalio.common import RetryPolicy
 from temporalio.service import RPCError
 
-from backend.client import get_client, refresh_data, get_feeders
+from backend.client import get_client, refresh_data, get_feeders, fetch_d4_feed_events
 from backend.config import TEMPORAL_TASK_QUEUE, PETKIT_TIMEZONE
 from backend.temporal.client import get_temporal_client
 from backend.temporal.workflows.feeder_workflows import (
@@ -91,44 +89,18 @@ def _serialize_feeder(feeder) -> dict:
 
 
 async def _fetch_d4_records(client, device_id: int) -> dict:
-    """Fetch feed history directly from the D4 feedStatistic endpoint.
-
-    The pypetkitapi library doesn't parse this response correctly — it expects
-    {eat: [], feed: [], ...} but D4 returns {YYYYMMDD: {seconds: amount}, realAmount: N}.
-    We make the raw request ourselves and convert it.
-    """
-    today = datetime.now()
-    dates = [(today - timedelta(days=i)).strftime("%Y%m%d") for i in range(7)]
-    all_events = []
-
-    for date_str in dates:
-        params = {"date": date_str, "type": 0, "deviceId": device_id}
-        response = await client.req.request(
-            method=HTTPMethod.POST,
-            url=f"d4/{PetkitEndpoint.FEED_STATISTIC}",
-            params=params,
-            headers=await client.get_session_id(),
-        )
-        if not isinstance(response, dict):
-            continue
-        day_data = response.get(date_str)
-        if not isinstance(day_data, dict):
-            continue
-        for seconds_str, amount in day_data.items():
-            try:
-                seconds = int(seconds_str)
-            except ValueError:
-                continue
-            hours, remainder = divmod(seconds, 3600)
-            minutes = remainder // 60
-            all_events.append({
-                "date": f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}",
-                "time": f"{hours:02d}:{minutes:02d}",
-                "amount": amount,
-            })
-
-    all_events.sort(key=lambda e: (e["date"], e["time"]), reverse=True)
-    return {"eat": [], "feed": all_events, "move": [], "pet": []}
+    """Fetch feed history for a D4 feeder, formatted for the records endpoint."""
+    events = await fetch_d4_feed_events(client, device_id, days=7)
+    feed_list = []
+    for ev in events:
+        hours, remainder = divmod(ev["seconds"], 3600)
+        minutes = remainder // 60
+        feed_list.append({
+            "date": ev["date"].strftime("%Y-%m-%d"),
+            "time": f"{hours:02d}:{minutes:02d}",
+            "amount": ev["amount"],
+        })
+    return {"eat": [], "feed": feed_list, "move": [], "pet": []}
 
 
 def _serialize_records(feeder) -> dict:

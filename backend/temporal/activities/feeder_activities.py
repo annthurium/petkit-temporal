@@ -1,11 +1,8 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from http import HTTPMethod
-from zoneinfo import ZoneInfo
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
-from pypetkitapi.const import PetkitEndpoint
 
 from backend.client import get_client, get_feeders, refresh_data
 from backend.config import PETKIT_TIMEZONE
@@ -112,42 +109,24 @@ def _is_after_threshold(
 
 
 async def _latest_d4_feed_timestamp(client, device_id: int) -> datetime | None:
-    """Return latest D4 feed event timestamp from raw feed statistics endpoint."""
+    """Return latest D4 feed event timestamp from the shared feed statistics helper."""
+    from backend.client import fetch_d4_feed_events
+    from zoneinfo import ZoneInfo
+
+    events = await fetch_d4_feed_events(client, device_id, days=2)
+    if not events:
+        return None
+
     try:
-        petkit_tz = ZoneInfo(PETKIT_TIMEZONE)
+        tz = ZoneInfo(PETKIT_TIMEZONE)
     except Exception:
-        petkit_tz = timezone.utc
+        tz = timezone.utc
 
-    today = datetime.now(petkit_tz).date()
-    latest: datetime | None = None
-
-    for days_ago in range(2):
-        day = today - timedelta(days=days_ago)
-        date_str = day.strftime("%Y%m%d")
-        params = {"date": date_str, "type": 0, "deviceId": device_id}
-        response = await client.req.request(
-            method=HTTPMethod.POST,
-            url=f"d4/{PetkitEndpoint.FEED_STATISTIC}",
-            params=params,
-            headers=await client.get_session_id(),
-        )
-        if not isinstance(response, dict):
-            continue
-        day_data = response.get(date_str)
-        if not isinstance(day_data, dict):
-            continue
-        for seconds_str in day_data.keys():
-            try:
-                seconds = int(seconds_str)
-            except (TypeError, ValueError):
-                continue
-            candidate_local = datetime(
-                day.year, day.month, day.day, tzinfo=petkit_tz
-            ) + timedelta(seconds=seconds)
-            candidate = candidate_local.astimezone(timezone.utc)
-            if latest is None or candidate > latest:
-                latest = candidate
-    return latest
+    ev = events[0]  # newest first
+    candidate_local = datetime(
+        ev["date"].year, ev["date"].month, ev["date"].day, tzinfo=tz
+    ) + timedelta(seconds=ev["seconds"])
+    return candidate_local.astimezone(timezone.utc)
 
 
 @dataclass

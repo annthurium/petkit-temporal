@@ -571,12 +571,9 @@ class TestVerifyFeedActivity:
         """For D4 devices, verification uses feed statistics records."""
         fake_client = AsyncMock()
         now = datetime.now(timezone.utc)
-        today_str = now.strftime("%Y%m%d")
+        today = now.date()
         seconds = now.hour * 3600 + now.minute * 60 + now.second
-        fake_client.req = SimpleNamespace(
-            request=AsyncMock(return_value={today_str: {str(seconds): 10}})
-        )
-        fake_client.get_session_id = AsyncMock(return_value={})
+        fake_events = [{"date": today, "seconds": seconds, "amount": 10}]
         feeder = SimpleNamespace(
             id=100,
             manual_feed=None,
@@ -587,6 +584,7 @@ class TestVerifyFeedActivity:
             patch("backend.temporal.activities.feeder_activities.PETKIT_TIMEZONE", "UTC"),
             patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
             patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={100: feeder}),
+            patch("backend.client.fetch_d4_feed_events", return_value=fake_events),
         ):
             result = await verify_feed(
                 VerifyFeedInput(
@@ -601,11 +599,9 @@ class TestVerifyFeedActivity:
         """Old D4 records should not verify a new feed command."""
         fake_client = AsyncMock()
         now = datetime.now(timezone.utc)
-        today_str = now.strftime("%Y%m%d")
-        fake_client.req = SimpleNamespace(
-            request=AsyncMock(return_value={today_str: {"1": 10}})
-        )
-        fake_client.get_session_id = AsyncMock(return_value={})
+        today = now.date()
+        # seconds=1 is 00:00:01 — well before any recent not_before threshold
+        fake_events = [{"date": today, "seconds": 1, "amount": 10}]
         feeder = SimpleNamespace(
             id=100,
             manual_feed=None,
@@ -616,6 +612,7 @@ class TestVerifyFeedActivity:
             patch("backend.temporal.activities.feeder_activities.PETKIT_TIMEZONE", "UTC"),
             patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
             patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={100: feeder}),
+            patch("backend.client.fetch_d4_feed_events", return_value=fake_events),
         ):
             result = await verify_feed(
                 VerifyFeedInput(
