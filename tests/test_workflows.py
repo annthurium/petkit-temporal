@@ -482,104 +482,14 @@ class TestSkipAfterManualFeedLogic:
 
 class TestVerifyFeedActivity:
     @pytest.mark.asyncio
-    async def test_verified_when_is_executed(self):
-        """Returns outcome=verified when manual_feed.is_executed is 1."""
-        fake_client = AsyncMock()
-        feeder = SimpleNamespace(
-            id=100,
-            manual_feed=SimpleNamespace(is_executed=1),
-            state=SimpleNamespace(online=1, error_msg=None),
-        )
-        with (
-            patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
-            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={100: feeder}),
-        ):
-            result = await verify_feed(VerifyFeedInput(device_id=100))
-            assert result.outcome == "verified"
-            assert result.device_id == 100
-
-    @pytest.mark.asyncio
-    async def test_not_verified_when_not_executed(self):
-        """Returns outcome=failed when manual_feed.is_executed is 0."""
-        fake_client = AsyncMock()
-        feeder = SimpleNamespace(
-            id=100,
-            manual_feed=SimpleNamespace(is_executed=0),
-            state=SimpleNamespace(online=1, error_msg=None),
-        )
-        with (
-            patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
-            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={100: feeder}),
-        ):
-            result = await verify_feed(VerifyFeedInput(device_id=100))
-            assert result.outcome == "failed"
-            assert "not confirmed" in result.error_msg
-
-    @pytest.mark.asyncio
-    async def test_not_verified_includes_device_error(self):
-        """When device has an error, that error message is forwarded."""
-        fake_client = AsyncMock()
-        feeder = SimpleNamespace(
-            id=100,
-            manual_feed=SimpleNamespace(is_executed=0),
-            state=SimpleNamespace(online=1, error_msg="Food hopper jammed"),
-        )
-        with (
-            patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
-            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={100: feeder}),
-        ):
-            result = await verify_feed(VerifyFeedInput(device_id=100))
-            assert result.outcome == "failed"
-            assert result.error_msg == "Food hopper jammed"
-
-    @pytest.mark.asyncio
-    async def test_offline_feeder_shows_helpful_message(self):
-        """When feeder is offline, the error message says so."""
-        fake_client = AsyncMock()
-        feeder = SimpleNamespace(
-            id=100,
-            manual_feed=SimpleNamespace(is_executed=0),
-            state=SimpleNamespace(online=0, error_msg=None),
-        )
-        with (
-            patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
-            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={100: feeder}),
-        ):
-            result = await verify_feed(VerifyFeedInput(device_id=100))
-            assert result.outcome == "failed"
-            assert "offline" in result.error_msg
-
-    @pytest.mark.asyncio
-    async def test_missing_manual_feed_online_without_error_is_unknown(self):
-        """Missing manual_feed metadata should return unknown in strict mode."""
-        fake_client = AsyncMock()
-        feeder = SimpleNamespace(
-            id=100,
-            manual_feed=None,
-            state=SimpleNamespace(online=1, error_msg=None),
-        )
-        with (
-            patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
-            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={100: feeder}),
-        ):
-            result = await verify_feed(VerifyFeedInput(device_id=100))
-            assert result.outcome == "unknown"
-            assert "unavailable" in (result.error_msg or "").lower()
-
-    @pytest.mark.asyncio
     async def test_d4_records_confirm_feed(self):
-        """For D4 devices, verification uses feed statistics records."""
+        """Verification uses D4 feed statistics records."""
         fake_client = AsyncMock()
         now = datetime.now(timezone.utc)
         today = now.date()
         seconds = now.hour * 3600 + now.minute * 60 + now.second
         fake_events = [{"date": today, "seconds": seconds, "amount": 10}]
-        feeder = SimpleNamespace(
-            id=100,
-            manual_feed=None,
-            state=SimpleNamespace(online=1, error_msg=None),
-            device_nfo=SimpleNamespace(device_type="d4"),
-        )
+        feeder = SimpleNamespace(id=100)
         with (
             patch("backend.temporal.activities.feeder_activities.PETKIT_TIMEZONE", "UTC"),
             patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
@@ -595,19 +505,14 @@ class TestVerifyFeedActivity:
             assert result.outcome == "verified"
 
     @pytest.mark.asyncio
-    async def test_d4_records_older_than_threshold_is_unknown(self):
+    async def test_d4_records_older_than_threshold_fails(self):
         """Old D4 records should not verify a new feed command."""
         fake_client = AsyncMock()
         now = datetime.now(timezone.utc)
         today = now.date()
         # seconds=1 is 00:00:01 — well before any recent not_before threshold
         fake_events = [{"date": today, "seconds": 1, "amount": 10}]
-        feeder = SimpleNamespace(
-            id=100,
-            manual_feed=None,
-            state=SimpleNamespace(online=1, error_msg=None),
-            device_nfo=SimpleNamespace(device_type="d4"),
-        )
+        feeder = SimpleNamespace(id=100)
         with (
             patch("backend.temporal.activities.feeder_activities.PETKIT_TIMEZONE", "UTC"),
             patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
@@ -620,24 +525,21 @@ class TestVerifyFeedActivity:
                     not_before=(now - timedelta(seconds=30)).isoformat(),
                 )
             )
-            assert result.outcome == "unknown"
+            assert result.outcome == "failed"
 
     @pytest.mark.asyncio
-    async def test_missing_manual_feed_with_device_error_is_not_verified(self):
-        """If device reports an error, verification should still fail."""
+    async def test_no_feed_records_fails(self):
+        """No feed records at all should fail verification."""
         fake_client = AsyncMock()
-        feeder = SimpleNamespace(
-            id=100,
-            manual_feed=None,
-            state=SimpleNamespace(online=1, error_msg="Food hopper jammed"),
-        )
+        feeder = SimpleNamespace(id=100)
         with (
+            patch("backend.temporal.activities.feeder_activities.PETKIT_TIMEZONE", "UTC"),
             patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
             patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={100: feeder}),
+            patch("backend.client.fetch_d4_feed_events", return_value=[]),
         ):
             result = await verify_feed(VerifyFeedInput(device_id=100))
             assert result.outcome == "failed"
-            assert result.error_msg == "Food hopper jammed"
 
     @pytest.mark.asyncio
     async def test_feeder_not_found_during_verification(self):
@@ -764,43 +666,6 @@ class TestSagaCompensationFlow:
             assert wf._last_alert is not None
             assert wf._last_alert["reason"] == "Food hopper jammed"
             assert wf._last_alert["device_id"] == 100
-
-    @pytest.mark.asyncio
-    async def test_unknown_verification_sets_unconfirmed_without_alert(self):
-        """Unknown verification should not alert and should produce unconfirmed status."""
-        wf = DailyScheduledFeedingWorkflow()
-        call_count = 0
-
-        async def wait_effect(condition, timeout=None):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise asyncio.TimeoutError()
-            raise _LoopBreak()
-
-        async def activity_effect(activity_fn, input, **kwargs):
-            if activity_fn == trigger_feed:
-                return {"status": "ok", "device_id": 100}
-            if activity_fn == verify_feed:
-                return VerifyFeedResult(
-                    outcome="unknown",
-                    device_id=100,
-                    error_msg="Feed confirmation unavailable from device telemetry",
-                )
-            raise AssertionError(f"Unexpected activity: {activity_fn}")
-
-        mock_now, mock_log, mock_activity, mock_wait, mock_sleep = self._workflow_patches(
-            wait_effect, activity_effect
-        )
-        with mock_now, mock_log, mock_activity as activity, mock_wait, mock_sleep:
-            with pytest.raises(_LoopBreak):
-                await wf.run(self._make_input())
-
-            # trigger + 4 verify attempts
-            assert activity.call_count == 5
-            assert wf._last_alert is None
-            assert wf._last_feed_result is not None
-            assert wf._last_feed_result.status == "unknown"
 
     def test_alert_visible_in_status_query(self):
         """The status query includes last_alert after a failed verification."""

@@ -12,12 +12,9 @@ ACTIVITY_RETRY_POLICY = RetryPolicy(
     initial_interval=timedelta(seconds=2),
     maximum_interval=timedelta(seconds=30),
 )
-VERIFY_CONFIRMATION_ATTEMPTS = 4
-VERIFY_CONFIRMATION_INTERVAL_SECONDS = 10
-
-# TODO: should I add a separate retry policy for feeding? 
+# TODO: should I add a separate retry policy for feeding?
 # Increase backoff interval, maybe try a few more times
-# since feeding is a critical task 
+# since feeding is a critical task
 
 # Continue-as-new after this many loop iterations to prevent unbounded event
 # history growth. Each iteration adds ~2-6 events (timers + activities), so
@@ -57,7 +54,7 @@ class FeedingScheduleStatus:
 
 @dataclass
 class FeedResultStatus:
-    status: str  # "success" | "failure" | "unknown"
+    status: str  # "success" | "failure"
     feed_type: str
     message: str
     timestamp: str
@@ -233,26 +230,17 @@ class DailyScheduledFeedingWorkflow:
                 verify_not_before = workflow.now().isoformat()
 
                 # Step 2: Verify the feed was executed by the device.
-                # Unknown results are retried for a bounded window.
-                # TODO: use Temporal's built in retry policy for this?
-                verify_result = None
-                for attempt in range(1, VERIFY_CONFIRMATION_ATTEMPTS + 1):
-                    verify_result = await workflow.execute_activity(
-                        verify_feed,
-                        VerifyFeedInput(
-                            device_id=input.device_id,
-                            is_manual=is_manual,
-                            not_before=verify_not_before,
-                        ),
-                        start_to_close_timeout=timedelta(seconds=30),
-                        retry_policy=ACTIVITY_RETRY_POLICY,
-                    )
-                    if verify_result.outcome != "unknown":
-                        break
-                    if attempt < VERIFY_CONFIRMATION_ATTEMPTS:
-                        await asyncio.sleep(VERIFY_CONFIRMATION_INTERVAL_SECONDS)
+                verify_result = await workflow.execute_activity(
+                    verify_feed,
+                    VerifyFeedInput(
+                        device_id=input.device_id,
+                        is_manual=is_manual,
+                        not_before=verify_not_before,
+                    ),
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=ACTIVITY_RETRY_POLICY,
+                )
 
-                assert verify_result is not None
                 if verify_result.outcome == "verified":
                     workflow.logger.info(
                         f"{feed_type} feeding verified for device {input.device_id}"
@@ -267,14 +255,6 @@ class DailyScheduledFeedingWorkflow:
                     if is_manual:
                         # Only skip the next scheduled run after a successful manual feed.
                         self._skip_next_scheduled = True
-                elif verify_result.outcome == "unknown":
-                    self._last_alert = None
-                    self._last_feed_result = FeedResultStatus(
-                        status="unknown",
-                        feed_type=feed_type.lower(),
-                        message=verify_result.error_msg or "Feed status unconfirmed",
-                        timestamp=workflow.now().isoformat(),
-                    )
                 else:
                     failure_reason = (
                         verify_result.error_msg or "Feed not confirmed by device"

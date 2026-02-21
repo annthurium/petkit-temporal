@@ -75,7 +75,7 @@ class VerifyFeedInput:
 
 @dataclass
 class VerifyFeedResult:
-    outcome: str  # "verified" | "failed" | "unknown"
+    outcome: str  # "verified" | "failed"
     device_id: int
     error_msg: str | None = None
 
@@ -147,11 +147,8 @@ class FeedAlert:
 async def verify_feed(input: VerifyFeedInput) -> VerifyFeedResult:
     """Verify that a feed command was actually executed by the device.
 
-    The workflow passes is_manual to indicate the feed type (manual vs
-    scheduled) — PetKit sees all Temporal-triggered feeds as "manual".
-    Refreshes device data from the PetKit cloud API, checks device health,
-    and then consults execution confirmation (D4 feed records or
-    manual_feed.is_executed for other models).
+    Refreshes device data from the PetKit cloud API and checks D4 feed
+    statistics records for a recent feed event after not_before.
     """
     client = await refresh_data()
     feeders = get_feeders(client)
@@ -163,56 +160,16 @@ async def verify_feed(input: VerifyFeedInput) -> VerifyFeedResult:
             error_msg="Feeder not found during verification",
         )
 
-    # TODO: we have 2 different ways of caching feeder data in this project. Clean that up.
-    feeder = feeders[input.device_id]
-    state = getattr(feeder, "state", None)
-    device_nfo = getattr(feeder, "device_nfo", None)
-    device_type = getattr(device_nfo, "device_type", None)
-    is_online = getattr(state, "online", None) if state else None
-    error_msg = getattr(state, "error_msg", None) if state else None
     not_before = _parse_iso_datetime(input.not_before)
+    latest_event = await _latest_d4_feed_timestamp(client, input.device_id)
 
-    if device_type == "d4":
-        latest_event = await _latest_d4_feed_timestamp(client, input.device_id)
-        if _is_after_threshold(latest_event, not_before):
-            return VerifyFeedResult(outcome="verified", device_id=input.device_id)
-
-    # Check device health before consulting feed execution status.
-    if is_online == 0:
-        return VerifyFeedResult(
-            outcome="failed",
-            device_id=input.device_id,
-            error_msg="Feeder is offline — check power and wifi connection",
-        )
-    if error_msg:
-        return VerifyFeedResult(
-            outcome="failed",
-            device_id=input.device_id,
-            error_msg=error_msg,
-        )
-
-    # The workflow tells us whether this was a manual or scheduled feed
-    # (via input.is_manual) — PetKit sees all Temporal-triggered feeds as
-    # "manual" anyway, so its manual_feed attribute is not useful for
-    # classification.  We still check the device's execution confirmation
-    # for non-D4 models.
-    manual_feed = getattr(feeder, "manual_feed", None)
-    is_executed = getattr(manual_feed, "is_executed", None) if manual_feed else None
-
-    if is_executed == 1:
+    if _is_after_threshold(latest_event, not_before):
         return VerifyFeedResult(outcome="verified", device_id=input.device_id)
-
-    if manual_feed is None:
-        return VerifyFeedResult(
-            outcome="unknown",
-            device_id=input.device_id,
-            error_msg="Feed confirmation unavailable from device telemetry",
-        )
 
     return VerifyFeedResult(
         outcome="failed",
         device_id=input.device_id,
-        error_msg="Feed was not confirmed by device",
+        error_msg="No recent feed record found in device telemetry",
     )
 
 
