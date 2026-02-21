@@ -68,8 +68,14 @@ export interface FeederRecords {
 export const fetchFeeders = () => api.get<Feeder[]>('/feeders').then(r => r.data);
 export const fetchFeeder = (id: number) => api.get<Feeder>(`/feeders/${id}`).then(r => r.data);
 export const fetchRecords = (id: number) => api.get<FeederRecords>(`/feeders/${id}/records`).then(r => r.data);
+
+export interface ManualFeedResponse {
+  status: string;
+  via: 'workflow' | 'direct';
+}
+
 export const manualFeed = (id: number, payload: { amount?: number; amount1?: number; amount2?: number }) =>
-  api.post(`/feeders/${id}/feed`, payload).then(r => r.data);
+  api.post<ManualFeedResponse>(`/feeders/${id}/feed`, payload).then(r => r.data);
 export const cancelFeed = (id: number) => api.post(`/feeders/${id}/feed/cancel`).then(r => r.data);
 export const updateSettings = (id: number, settings: Record<string, unknown>) =>
   api.post(`/feeders/${id}/settings`, { settings }).then(r => r.data);
@@ -80,13 +86,39 @@ export const removeSchedule = (id: number) => api.post(`/feeders/${id}/schedule/
 export const restoreSchedule = (id: number) => api.post(`/feeders/${id}/schedule/restore`).then(r => r.data);
 export const refreshFeeder = (id: number) => api.post<Feeder>(`/feeders/${id}/refresh`).then(r => r.data);
 
+export interface FeedAlert {
+  device_id: number;
+  reason: string;
+  timestamp: string;
+}
+
 export interface FeedSchedule {
   time: string;
   amount: number;
   skip_next: boolean;
+  last_alert: FeedAlert | null;
 }
 
 export const fetchSchedule = (id: number) => api.get<FeedSchedule | null>(`/feeders/${id}/schedule`).then(r => r.data);
 export const setSchedule = (id: number, payload: { time: string; amount: number }) =>
   api.put<FeedSchedule>(`/feeders/${id}/schedule`, payload).then(r => r.data);
 export const deleteSchedule = (id: number) => api.delete(`/feeders/${id}/schedule`).then(r => r.data);
+
+export function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError(error)) {
+    const detail = error.response?.data?.detail;
+    if (typeof detail === 'string' && detail.trim().length > 0) {
+      return detail;
+    }
+
+    if (typeof error.message === 'string' && error.message.trim().length > 0) {
+      return error.message;
+    }
+  }
+
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return fallback;
+}

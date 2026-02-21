@@ -10,7 +10,11 @@ from backend.client import shutdown
 from backend.config import TEMPORAL_HOST, TEMPORAL_TASK_QUEUE
 from backend.routers.feeders import router as feeders_router
 from backend.temporal.client import get_temporal_client
-from backend.temporal.activities.feeder_activities import trigger_feed
+from backend.temporal.activities.feeder_activities import (
+    alert_feed_failure,
+    trigger_feed,
+    verify_feed,
+)
 from backend.temporal.workflows.feeder_workflows import DailyScheduledFeedingWorkflow
 
 logger = logging.getLogger(__name__)
@@ -29,7 +33,7 @@ async def run_temporal_worker_with_retry(shutdown_event: asyncio.Event) -> None:
                 client,
                 task_queue=TEMPORAL_TASK_QUEUE,
                 workflows=[DailyScheduledFeedingWorkflow],
-                activities=[trigger_feed],
+                activities=[trigger_feed, verify_feed, alert_feed_failure],
             )
 
             logger.info("Temporal worker started on task queue: %s", TEMPORAL_TASK_QUEUE)

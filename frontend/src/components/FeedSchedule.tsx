@@ -1,5 +1,11 @@
 import { useState, useEffect } from 'react';
-import { type FeedSchedule, fetchSchedule, setSchedule, deleteSchedule } from '../api';
+import {
+  type FeedSchedule,
+  deleteSchedule,
+  fetchSchedule,
+  getApiErrorMessage,
+  setSchedule,
+} from '../api';
 
 interface Props {
   feederId: number;
@@ -14,17 +20,39 @@ export default function FeedSchedulePanel({ feederId }: Props) {
   const [amount, setAmount] = useState(10);
 
   useEffect(() => {
-    setLoading(true);
-    fetchSchedule(feederId)
-      .then(s => {
+    let isMounted = true;
+    let hasInitialized = false;
+
+    const loadSchedule = async () => {
+      if (!hasInitialized && isMounted) {
+        setLoading(true);
+      }
+      try {
+        const s = await fetchSchedule(feederId);
+        if (!isMounted) return;
+        setScheduleState(s);
         if (s) {
-          setScheduleState(s);
           setTime(s.time);
           setAmount(s.amount);
         }
-      })
-      .catch(() => setScheduleState(null))
-      .finally(() => setLoading(false));
+      } catch {
+        if (!isMounted) return;
+        setScheduleState(null);
+      } finally {
+        if (!hasInitialized && isMounted) {
+          setLoading(false);
+        }
+        hasInitialized = true;
+      }
+    };
+
+    loadSchedule();
+    const interval = window.setInterval(loadSchedule, 5000);
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(interval);
+    };
   }, [feederId]);
 
   const handleSave = async () => {
@@ -34,8 +62,8 @@ export default function FeedSchedulePanel({ feederId }: Props) {
       const s = await setSchedule(feederId, { time, amount });
       setScheduleState(s);
       setMessage('Schedule saved');
-    } catch {
-      setMessage('Failed to save schedule');
+    } catch (error: unknown) {
+      setMessage(getApiErrorMessage(error, 'Failed to save schedule'));
     } finally {
       setSaving(false);
     }
@@ -48,8 +76,8 @@ export default function FeedSchedulePanel({ feederId }: Props) {
       await deleteSchedule(feederId);
       setScheduleState(null);
       setMessage('Schedule removed');
-    } catch {
-      setMessage('Failed to remove schedule');
+    } catch (error: unknown) {
+      setMessage(getApiErrorMessage(error, 'Failed to remove schedule'));
     } finally {
       setSaving(false);
     }
@@ -69,6 +97,15 @@ export default function FeedSchedulePanel({ feederId }: Props) {
           </p>
           {schedule.skip_next && (
             <p className="text-sm text-neon-pink">Next feeding will be skipped (manual feed detected)</p>
+          )}
+          {schedule.last_alert && (
+            <div className="mt-3 p-3 rounded-lg bg-vapor-danger/10 border border-vapor-danger/30 space-y-1">
+              <p className="text-sm font-semibold text-vapor-danger">Feed Alert</p>
+              <p className="text-sm text-vapor-danger">{schedule.last_alert.reason}</p>
+              <p className="text-xs text-vapor-muted">
+                {new Date(schedule.last_alert.timestamp).toLocaleString()}
+              </p>
+            </div>
           )}
         </div>
       )}

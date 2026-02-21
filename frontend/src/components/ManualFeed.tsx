@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { manualFeed, cancelFeed } from '../api';
+import { cancelFeed, getApiErrorMessage, manualFeed } from '../api';
 
 interface Props {
   feederId: number;
@@ -10,16 +10,24 @@ export default function ManualFeed({ feederId, onDone }: Props) {
   const [amount, setAmount] = useState(5);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [messageTone, setMessageTone] = useState<'success' | 'error' | 'info'>('success');
 
   const handleFeed = async () => {
     setLoading(true);
     setMessage(null);
     try {
-      await manualFeed(feederId, { amount });
-      setMessage(`Fed ${amount}g successfully`);
+      const result = await manualFeed(feederId, { amount });
+      if (result.via === 'workflow') {
+        setMessageTone('info');
+        setMessage('Feed request sent. Waiting for device confirmation; check Schedule for any feed alert.');
+      } else {
+        setMessageTone('success');
+        setMessage(`Fed ${amount}g successfully`);
+      }
       onDone();
-    } catch {
-      setMessage('Failed to feed');
+    } catch (error: unknown) {
+      setMessageTone('error');
+      setMessage(getApiErrorMessage(error, 'Failed to feed'));
     } finally {
       setLoading(false);
     }
@@ -30,10 +38,12 @@ export default function ManualFeed({ feederId, onDone }: Props) {
     setMessage(null);
     try {
       await cancelFeed(feederId);
+      setMessageTone('success');
       setMessage('Feed cancelled');
       onDone();
-    } catch {
-      setMessage('Failed to cancel feed');
+    } catch (error: unknown) {
+      setMessageTone('error');
+      setMessage(getApiErrorMessage(error, 'Failed to cancel feed'));
     } finally {
       setLoading(false);
     }
@@ -71,7 +81,15 @@ export default function ManualFeed({ feederId, onDone }: Props) {
         </button>
       </div>
       {message && (
-        <p className={`text-sm ${message.includes('Failed') ? 'text-vapor-danger' : 'text-vapor-success'}`}>
+        <p
+          className={`text-sm ${
+            messageTone === 'error'
+              ? 'text-vapor-danger'
+              : messageTone === 'info'
+                ? 'text-neon-cyan'
+                : 'text-vapor-success'
+          }`}
+        >
           {message}
         </p>
       )}

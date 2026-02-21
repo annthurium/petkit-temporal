@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError
 
 ACTIVITY_RETRY_POLICY = RetryPolicy(
     maximum_attempts=3,
@@ -21,8 +22,13 @@ with workflow.unsafe.imports_passed_through():
     from zoneinfo import ZoneInfo
 
     from backend.temporal.activities.feeder_activities import (
+        FeedAlert,
+        FeedAlertInput,
         ManualFeedInput,
+        VerifyFeedInput,
+        alert_feed_failure,
         trigger_feed,
+        verify_feed,
     )
 
 
@@ -39,6 +45,7 @@ class FeedingScheduleStatus:
     amount: int
     hour: int
     minute: int
+    last_alert: dict | None = None
 
 
 @dataclass
@@ -50,6 +57,7 @@ class DailyScheduledFeedingInput:
     timezone: str = "America/Los_Angeles"
     # Carried across continue-as-new boundaries to preserve logical state
     initial_skip_next: bool = False
+    initial_last_alert: dict | None = None
 
 
 @workflow.defn
@@ -71,6 +79,7 @@ class DailyScheduledFeedingWorkflow:
         self._hour: int = 0
         self._minute: int = 0
         self._iterations: int = 0
+        self._last_alert: dict | None = None
 
     def _to_local_naive(self, timezone_str: str):
         """Convert workflow.now() (UTC) to a naive local datetime.
@@ -107,6 +116,7 @@ class DailyScheduledFeedingWorkflow:
         self._hour = input.hour
         self._minute = input.minute
         self._skip_next_scheduled = input.initial_skip_next
+        self._last_alert = input.initial_last_alert
 
         while True:
             self._iterations += 1
@@ -121,6 +131,7 @@ class DailyScheduledFeedingWorkflow:
                         minute=self._minute,
                         timezone=input.timezone,
                         initial_skip_next=self._skip_next_scheduled,
+                        initial_last_alert=self._last_alert,
                     )
                 )
 
@@ -155,8 +166,6 @@ class DailyScheduledFeedingWorkflow:
                 )
                 self._manual_feed_request = None
                 is_manual = True
-                # Skip the next scheduled feed since we just fed manually
-                self._skip_next_scheduled = True
             else:
                 # Scheduled feed time reached — skip if a manual feed was recently done
                 if self._skip_next_scheduled:
@@ -170,21 +179,83 @@ class DailyScheduledFeedingWorkflow:
                 feed_input = ManualFeedInput(device_id=input.device_id, amount=input.amount)
                 is_manual = False
 
-            await workflow.execute_activity(
-                trigger_feed,
-                feed_input,
-                start_to_close_timeout=timedelta(seconds=30),
-                retry_policy=ACTIVITY_RETRY_POLICY,
-            )
+            # === SAGA: trigger -> verify -> compensate ===
 
             feed_type = "Manual" if is_manual else "Scheduled"
-            workflow.logger.info(
-                f"{feed_type} feeding completed for device {input.device_id}"
-            )
+            failure_reason = None
+
+            # Step 1: Trigger the feed
+            try:
+                await workflow.execute_activity(
+                    trigger_feed,
+                    feed_input,
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=ACTIVITY_RETRY_POLICY,
+                )
+            except ActivityError as e:
+                # The trigger itself failed (e.g. device offline, API error).
+                # Extract the error message and skip straight to compensation.
+                failure_reason = str(e.cause) if e.cause else str(e)
+                workflow.logger.warning(
+                    f"{feed_type} feeding failed for device "
+                    f"{input.device_id}: {failure_reason}"
+                )
+
+            if failure_reason is None:
+                workflow.logger.info(
+                    f"{feed_type} feeding triggered for device {input.device_id}, "
+                    "verifying..."
+                )
+
+                # Brief delay to let the device process the command.
+                # PetKit's cloud API updates asynchronously after the command is sent.
+                await asyncio.sleep(5)
+
+                # Step 2: Verify the feed was executed by the device
+                verify_result = await workflow.execute_activity(
+                    verify_feed,
+                    VerifyFeedInput(device_id=input.device_id),
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=ACTIVITY_RETRY_POLICY,
+                )
+
+                if verify_result.verified:
+                    workflow.logger.info(
+                        f"{feed_type} feeding verified for device {input.device_id}"
+                    )
+                    self._last_alert = None
+                    if is_manual:
+                        # Only skip the next scheduled run after a successful manual feed.
+                        self._skip_next_scheduled = True
+                else:
+                    failure_reason = (
+                        verify_result.error_msg or "Feed not confirmed by device"
+                    )
+
+            if failure_reason is not None:
+                # Step 3 (compensation): Alert the user on failure
+                workflow.logger.warning(
+                    f"{feed_type} feeding NOT verified for device "
+                    f"{input.device_id}: {failure_reason}"
+                )
+                alert = await workflow.execute_activity(
+                    alert_feed_failure,
+                    FeedAlertInput(
+                        device_id=input.device_id,
+                        reason=failure_reason,
+                    ),
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=ACTIVITY_RETRY_POLICY,
+                )
+                self._last_alert = {
+                    "device_id": alert.device_id,
+                    "reason": alert.reason,
+                    "timestamp": alert.timestamp,
+                }
 
     @workflow.signal
     def manual_feed_now(self, request: ManualFeedSignal) -> None:
-        """Request an immediate manual feed. The next scheduled feed will be skipped."""
+        """Request an immediate manual feed. On success, the next scheduled feed is skipped."""
         self._manual_feed_request = request
 
     @workflow.query
@@ -195,4 +266,5 @@ class DailyScheduledFeedingWorkflow:
             amount=self._amount,
             hour=self._hour,
             minute=self._minute,
+            last_alert=self._last_alert,
         )

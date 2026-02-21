@@ -18,8 +18,14 @@ import pytest
 from temporalio.exceptions import ApplicationError
 
 from backend.temporal.activities.feeder_activities import (
+    FeedAlert,
+    FeedAlertInput,
     ManualFeedInput,
+    VerifyFeedInput,
+    VerifyFeedResult,
+    alert_feed_failure,
     trigger_feed,
+    verify_feed,
 )
 from backend.temporal.workflows.feeder_workflows import (
     ACTIVITY_RETRY_POLICY,
@@ -134,6 +140,7 @@ class TestDailyScheduledFeedingWorkflowUnit:
             amount=0,
             hour=0,
             minute=0,
+            last_alert=None,
         )
 
     def test_status_reflects_state_changes(self):
@@ -148,6 +155,7 @@ class TestDailyScheduledFeedingWorkflowUnit:
             amount=15,
             hour=8,
             minute=30,
+            last_alert=None,
         )
 
 
@@ -202,6 +210,25 @@ class TestApplicationErrorRetryBehavior:
             with pytest.raises(ConnectionError):
                 await trigger_feed(ManualFeedInput(device_id=100, amount=10))
 
+    @pytest.mark.asyncio
+    async def test_trigger_feed_petkit_error_wraps_as_retryable(self):
+        """PypetkitError is wrapped in ApplicationError with the API message, and is retryable."""
+        from pypetkitapi.exceptions import PypetkitError
+
+        fake_client = AsyncMock()
+        fake_client.send_api_request.side_effect = PypetkitError(
+            "Device is offline. You cannot change your feeding plan."
+        )
+        feeders = {100: _make_feeder(100)}
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+        ):
+            with pytest.raises(ApplicationError) as exc_info:
+                await trigger_feed(ManualFeedInput(device_id=100, amount=10))
+            assert "offline" in str(exc_info.value).lower()
+            assert exc_info.value.non_retryable is False
+
 
 # ---------------------------------------------------------------------------
 # Workflow run() loop — skip-after-manual-feed logic
@@ -234,6 +261,7 @@ class TestSkipAfterManualFeedLogic:
             patch.object(workflow, "logger", MagicMock()),
             patch.object(workflow, "execute_activity", new_callable=AsyncMock),
             patch.object(workflow, "wait_condition", side_effect=wait_side_effect),
+            patch("asyncio.sleep", new_callable=AsyncMock),
         )
 
     @pytest.mark.asyncio
@@ -250,16 +278,45 @@ class TestSkipAfterManualFeedLogic:
                 return
             raise _LoopBreak()
 
-        mock_now, mock_log, mock_activity, mock_wait = self._workflow_patches(wait_effect)
-        with mock_now, mock_log, mock_activity as activity, mock_wait:
+        mock_now, mock_log, mock_activity, mock_wait, mock_sleep = self._workflow_patches(wait_effect)
+        with mock_now, mock_log, mock_activity as activity, mock_wait, mock_sleep:
             with pytest.raises(_LoopBreak):
                 await wf.run(self._make_input())
 
-            activity.assert_called_once()
-            feed_input = activity.call_args[0][1]
+            # trigger_feed + verify_feed = 2 calls per feed
+            assert activity.call_count == 2
+            feed_input = activity.call_args_list[0][0][1]
             assert feed_input.device_id == 100
             assert feed_input.amount == 5
             assert wf._skip_next_scheduled is True
+
+    @pytest.mark.asyncio
+    async def test_failed_manual_feed_does_not_set_skip_flag(self):
+        """Failed manual feeds should not cause the next scheduled feed to be skipped."""
+        wf = DailyScheduledFeedingWorkflow()
+        call_count = 0
+
+        async def wait_effect(condition, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                wf._manual_feed_request = ManualFeedSignal(amount=5)
+                return
+            raise _LoopBreak()
+
+        mock_now, mock_log, mock_activity, mock_wait, mock_sleep = self._workflow_patches(wait_effect)
+        with mock_now, mock_log, mock_activity as activity, mock_wait, mock_sleep:
+            activity.side_effect = [
+                None,  # trigger_feed
+                VerifyFeedResult(verified=False, device_id=100, error_msg="Device offline"),
+                FeedAlert(device_id=100, reason="Device offline", timestamp="2025-01-15T08:00:00Z"),
+            ]
+
+            with pytest.raises(_LoopBreak):
+                await wf.run(self._make_input())
+
+            assert activity.call_count == 3
+            assert wf._skip_next_scheduled is False
 
     @pytest.mark.asyncio
     async def test_skip_flag_prevents_scheduled_feed(self):
@@ -274,8 +331,8 @@ class TestSkipAfterManualFeedLogic:
                 raise asyncio.TimeoutError()
             raise _LoopBreak()
 
-        mock_now, mock_log, mock_activity, mock_wait = self._workflow_patches(wait_effect)
-        with mock_now, mock_log, mock_activity as activity, mock_wait:
+        mock_now, mock_log, mock_activity, mock_wait, mock_sleep = self._workflow_patches(wait_effect)
+        with mock_now, mock_log, mock_activity as activity, mock_wait, mock_sleep:
             with pytest.raises(_LoopBreak):
                 await wf.run(self._make_input(initial_skip_next=True))
 
@@ -298,16 +355,17 @@ class TestSkipAfterManualFeedLogic:
                 raise asyncio.TimeoutError()
             raise _LoopBreak()
 
-        mock_now, mock_log, mock_activity, mock_wait = self._workflow_patches(wait_effect)
-        with mock_now, mock_log, mock_activity as activity, mock_wait:
+        mock_now, mock_log, mock_activity, mock_wait, mock_sleep = self._workflow_patches(wait_effect)
+        with mock_now, mock_log, mock_activity as activity, mock_wait, mock_sleep:
             with pytest.raises(_LoopBreak):
                 await wf.run(self._make_input())
 
-            assert activity.call_count == 2
+            # 2 feeds × 2 calls each (trigger + verify) = 4
+            assert activity.call_count == 4
             # First: manual feed with signal amount
             assert activity.call_args_list[0][0][1].amount == 5
-            # Second: scheduled feed with configured amount
-            assert activity.call_args_list[1][0][1].amount == 10
+            # Second: scheduled feed with configured amount (index 2, after verify)
+            assert activity.call_args_list[2][0][1].amount == 10
             assert wf._skip_next_scheduled is False
 
     @pytest.mark.asyncio
@@ -330,16 +388,16 @@ class TestSkipAfterManualFeedLogic:
                 raise asyncio.TimeoutError()
             raise _LoopBreak()
 
-        mock_now, mock_log, mock_activity, mock_wait = self._workflow_patches(wait_effect)
-        with mock_now, mock_log, mock_activity as activity, mock_wait:
+        mock_now, mock_log, mock_activity, mock_wait, mock_sleep = self._workflow_patches(wait_effect)
+        with mock_now, mock_log, mock_activity as activity, mock_wait, mock_sleep:
             with pytest.raises(_LoopBreak):
                 await wf.run(self._make_input())
 
-            # 2 manual + 1 scheduled = 3 total (the first scheduled was skipped)
-            assert activity.call_count == 3
+            # 3 feeds × 2 calls each (trigger + verify) = 6
+            assert activity.call_count == 6
             assert activity.call_args_list[0][0][1].amount == 7
-            assert activity.call_args_list[1][0][1].amount == 7
-            assert activity.call_args_list[2][0][1].amount == 10
+            assert activity.call_args_list[2][0][1].amount == 7
+            assert activity.call_args_list[4][0][1].amount == 10
 
     @pytest.mark.asyncio
     async def test_scheduled_feed_without_prior_manual(self):
@@ -354,13 +412,14 @@ class TestSkipAfterManualFeedLogic:
                 raise asyncio.TimeoutError()
             raise _LoopBreak()
 
-        mock_now, mock_log, mock_activity, mock_wait = self._workflow_patches(wait_effect)
-        with mock_now, mock_log, mock_activity as activity, mock_wait:
+        mock_now, mock_log, mock_activity, mock_wait, mock_sleep = self._workflow_patches(wait_effect)
+        with mock_now, mock_log, mock_activity as activity, mock_wait, mock_sleep:
             with pytest.raises(_LoopBreak):
                 await wf.run(self._make_input())
 
-            activity.assert_called_once()
-            feed_input = activity.call_args[0][1]
+            # trigger_feed + verify_feed = 2 calls
+            assert activity.call_count == 2
+            feed_input = activity.call_args_list[0][0][1]
             assert feed_input.device_id == 100
             assert feed_input.amount == 10
             assert wf._skip_next_scheduled is False
@@ -379,8 +438,8 @@ class TestSkipAfterManualFeedLogic:
                 return
             raise _LoopBreak()
 
-        mock_now, mock_log, mock_activity, mock_wait = self._workflow_patches(wait_effect)
-        with mock_now, mock_log, mock_activity, mock_wait:
+        mock_now, mock_log, mock_activity, mock_wait, mock_sleep = self._workflow_patches(wait_effect)
+        with mock_now, mock_log, mock_activity, mock_wait, mock_sleep:
             with pytest.raises(_LoopBreak):
                 await wf.run(self._make_input())
 
@@ -389,3 +448,272 @@ class TestSkipAfterManualFeedLogic:
             assert status.amount == 10
             assert status.hour == 8
 
+
+# ---------------------------------------------------------------------------
+# Activity: verify_feed
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyFeedActivity:
+    @pytest.mark.asyncio
+    async def test_verified_when_is_executed(self):
+        """Returns verified=True when manual_feed.is_executed is 1."""
+        fake_client = AsyncMock()
+        feeder = SimpleNamespace(
+            id=100,
+            manual_feed=SimpleNamespace(is_executed=1),
+            state=SimpleNamespace(online=1, error_msg=None),
+        )
+        with (
+            patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={100: feeder}),
+        ):
+            result = await verify_feed(VerifyFeedInput(device_id=100))
+            assert result.verified is True
+            assert result.device_id == 100
+
+    @pytest.mark.asyncio
+    async def test_not_verified_when_not_executed(self):
+        """Returns verified=False when manual_feed.is_executed is 0."""
+        fake_client = AsyncMock()
+        feeder = SimpleNamespace(
+            id=100,
+            manual_feed=SimpleNamespace(is_executed=0),
+            state=SimpleNamespace(online=1, error_msg=None),
+        )
+        with (
+            patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={100: feeder}),
+        ):
+            result = await verify_feed(VerifyFeedInput(device_id=100))
+            assert result.verified is False
+            assert "not confirmed" in result.error_msg
+
+    @pytest.mark.asyncio
+    async def test_not_verified_includes_device_error(self):
+        """When device has an error, that error message is forwarded."""
+        fake_client = AsyncMock()
+        feeder = SimpleNamespace(
+            id=100,
+            manual_feed=SimpleNamespace(is_executed=0),
+            state=SimpleNamespace(online=1, error_msg="Food hopper jammed"),
+        )
+        with (
+            patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={100: feeder}),
+        ):
+            result = await verify_feed(VerifyFeedInput(device_id=100))
+            assert result.verified is False
+            assert result.error_msg == "Food hopper jammed"
+
+    @pytest.mark.asyncio
+    async def test_offline_feeder_shows_helpful_message(self):
+        """When feeder is offline, the error message says so."""
+        fake_client = AsyncMock()
+        feeder = SimpleNamespace(
+            id=100,
+            manual_feed=None,
+            state=SimpleNamespace(online=0, error_msg=None),
+        )
+        with (
+            patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={100: feeder}),
+        ):
+            result = await verify_feed(VerifyFeedInput(device_id=100))
+            assert result.verified is False
+            assert "offline" in result.error_msg
+
+    @pytest.mark.asyncio
+    async def test_feeder_not_found_during_verification(self):
+        """Returns not verified when feeder disappears between trigger and verify."""
+        fake_client = AsyncMock()
+        with (
+            patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
+        ):
+            result = await verify_feed(VerifyFeedInput(device_id=999))
+            assert result.verified is False
+            assert "not found" in result.error_msg
+
+
+# ---------------------------------------------------------------------------
+# Activity: alert_feed_failure
+# ---------------------------------------------------------------------------
+
+
+class TestAlertFeedFailureActivity:
+    @pytest.mark.asyncio
+    async def test_returns_alert_with_details(self):
+        result = await alert_feed_failure(
+            FeedAlertInput(device_id=100, reason="Feed not confirmed")
+        )
+        assert result.device_id == 100
+        assert result.reason == "Feed not confirmed"
+        assert result.timestamp  # Non-empty ISO string
+
+
+# ---------------------------------------------------------------------------
+# Workflow run() loop — saga compensation flow
+# ---------------------------------------------------------------------------
+
+
+class TestSagaCompensationFlow:
+    """Test the trigger -> verify -> compensate saga in the workflow loop."""
+
+    def _make_input(self, **overrides):
+        defaults = dict(device_id=100, amount=10, hour=8, minute=0, timezone="UTC")
+        defaults.update(overrides)
+        return DailyScheduledFeedingInput(**defaults)
+
+    def _workflow_patches(self, wait_side_effect, activity_side_effect, mock_now=None):
+        if mock_now is None:
+            mock_now = datetime(2025, 1, 15, 7, 0)
+        return (
+            patch.object(workflow, "now", return_value=mock_now),
+            patch.object(workflow, "logger", MagicMock()),
+            patch.object(workflow, "execute_activity", new_callable=AsyncMock, side_effect=activity_side_effect),
+            patch.object(workflow, "wait_condition", side_effect=wait_side_effect),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        )
+
+    @pytest.mark.asyncio
+    async def test_successful_verification_clears_alert(self):
+        """When verify_feed returns verified=True, no compensation runs and alert is cleared."""
+        wf = DailyScheduledFeedingWorkflow()
+        wf._last_alert = {"device_id": 100, "reason": "old alert", "timestamp": "..."}
+        call_count = 0
+
+        async def wait_effect(condition, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise asyncio.TimeoutError()
+            raise _LoopBreak()
+
+        async def activity_effect(activity_fn, input, **kwargs):
+            if activity_fn == trigger_feed:
+                return {"status": "ok", "device_id": 100}
+            if activity_fn == verify_feed:
+                return VerifyFeedResult(verified=True, device_id=100)
+            raise AssertionError(f"Unexpected activity: {activity_fn}")
+
+        mock_now, mock_log, mock_activity, mock_wait, mock_sleep = self._workflow_patches(
+            wait_effect, activity_effect
+        )
+        with mock_now, mock_log, mock_activity as activity, mock_wait, mock_sleep:
+            with pytest.raises(_LoopBreak):
+                await wf.run(self._make_input())
+
+            # trigger_feed + verify_feed = 2 calls, no compensation
+            assert activity.call_count == 2
+            assert wf._last_alert is None
+
+    @pytest.mark.asyncio
+    async def test_failed_verification_triggers_compensation(self):
+        """When verify_feed returns verified=False, alert_feed_failure runs."""
+        wf = DailyScheduledFeedingWorkflow()
+        call_count = 0
+
+        async def wait_effect(condition, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise asyncio.TimeoutError()
+            raise _LoopBreak()
+
+        async def activity_effect(activity_fn, input, **kwargs):
+            if activity_fn == trigger_feed:
+                return {"status": "ok", "device_id": 100}
+            if activity_fn == verify_feed:
+                return VerifyFeedResult(
+                    verified=False, device_id=100, error_msg="Food hopper jammed"
+                )
+            if activity_fn == alert_feed_failure:
+                return FeedAlert(
+                    device_id=100,
+                    reason="Food hopper jammed",
+                    timestamp="2025-01-15T07:00:05+00:00",
+                )
+            raise AssertionError(f"Unexpected activity: {activity_fn}")
+
+        mock_now, mock_log, mock_activity, mock_wait, mock_sleep = self._workflow_patches(
+            wait_effect, activity_effect
+        )
+        with mock_now, mock_log, mock_activity as activity, mock_wait, mock_sleep:
+            with pytest.raises(_LoopBreak):
+                await wf.run(self._make_input())
+
+            # trigger_feed + verify_feed + alert_feed_failure = 3 calls
+            assert activity.call_count == 3
+            assert wf._last_alert is not None
+            assert wf._last_alert["reason"] == "Food hopper jammed"
+            assert wf._last_alert["device_id"] == 100
+
+    def test_alert_visible_in_status_query(self):
+        """The status query includes last_alert after a failed verification."""
+        wf = DailyScheduledFeedingWorkflow()
+        wf._amount = 10
+        wf._hour = 8
+        wf._minute = 0
+        wf._last_alert = {
+            "device_id": 100,
+            "reason": "Feed not confirmed",
+            "timestamp": "2025-01-15T07:00:05+00:00",
+        }
+        status = wf.status()
+        assert status.last_alert is not None
+        assert status.last_alert["reason"] == "Feed not confirmed"
+
+    def test_no_alert_in_status_when_no_failure(self):
+        """The status query has last_alert=None when all feeds verified."""
+        wf = DailyScheduledFeedingWorkflow()
+        wf._amount = 10
+        wf._hour = 8
+        status = wf.status()
+        assert status.last_alert is None
+
+    @pytest.mark.asyncio
+    async def test_trigger_failure_skips_verify_and_runs_compensation(self):
+        """When trigger_feed itself fails, verify is skipped and compensation runs."""
+        from temporalio.exceptions import ActivityError
+
+        wf = DailyScheduledFeedingWorkflow()
+        call_count = 0
+
+        async def wait_effect(condition, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise asyncio.TimeoutError()
+            raise _LoopBreak()
+
+        async def activity_effect(activity_fn, input, **kwargs):
+            if activity_fn == trigger_feed:
+                raise ActivityError(
+                    "Device is offline. You cannot change your feeding plan.",
+                    scheduled_event_id=1,
+                    started_event_id=2,
+                    identity="test",
+                    activity_type="trigger_feed",
+                    activity_id="1",
+                    retry_state=None,
+                )
+            if activity_fn == alert_feed_failure:
+                return FeedAlert(
+                    device_id=100,
+                    reason=input.reason,
+                    timestamp="2025-01-15T07:00:05+00:00",
+                )
+            raise AssertionError(f"Unexpected activity: {activity_fn}")
+
+        mock_now, mock_log, mock_activity, mock_wait, mock_sleep = self._workflow_patches(
+            wait_effect, activity_effect
+        )
+        with mock_now, mock_log, mock_activity as activity, mock_wait, mock_sleep:
+            with pytest.raises(_LoopBreak):
+                await wf.run(self._make_input())
+
+            # trigger_feed (failed) + alert_feed_failure = 2 calls, no verify
+            assert activity.call_count == 2
+            assert wf._last_alert is not None
+            assert "offline" in wf._last_alert["reason"].lower()

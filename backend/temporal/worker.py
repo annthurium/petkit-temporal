@@ -14,7 +14,11 @@ from temporalio.worker import Worker
 
 from backend.config import TEMPORAL_HOST, TEMPORAL_TASK_QUEUE
 from backend.temporal.client import get_temporal_client
-from backend.temporal.activities.feeder_activities import trigger_feed
+from backend.temporal.activities.feeder_activities import (
+    alert_feed_failure,
+    trigger_feed,
+    verify_feed,
+)
 from backend.temporal.workflows.feeder_workflows import DailyScheduledFeedingWorkflow
 
 
@@ -28,7 +32,7 @@ async def run_worker() -> None:
         client,
         task_queue=TEMPORAL_TASK_QUEUE,
         workflows=[DailyScheduledFeedingWorkflow],
-        activities=[trigger_feed],
+        activities=[trigger_feed, verify_feed, alert_feed_failure],
     )
 
     print("Worker started. Press Ctrl+C to stop.")

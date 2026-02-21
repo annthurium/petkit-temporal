@@ -325,6 +325,7 @@ async def get_schedule(device_id: int):
             "skip_next": result.skip_next_scheduled,
             "running": True,
             "workflow_id": workflow_id,
+            "last_alert": result.last_alert,
         }
     except RPCError:
         return None
