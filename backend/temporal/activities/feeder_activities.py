@@ -196,6 +196,8 @@ async def verify_feed(input: VerifyFeedInput) -> VerifyFeedResult:
         if _is_after_threshold(latest_event, not_before):
             return VerifyFeedResult(outcome="verified", device_id=input.device_id)
 
+    # TODO: pass manual_feed variable from the Temporal workflow
+    # The feeder sees all feeds as manual feeds.
     manual_feed = getattr(feeder, "manual_feed", None)
 
     if manual_feed is None:
