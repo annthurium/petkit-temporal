@@ -107,6 +107,9 @@ async def verify_feed(input: VerifyFeedInput) -> VerifyFeedResult:
             error_msg="Feeder not found during verification",
         )
 
+    # This code isn't gonna work. feeders is a cached dict.
+    # Either have a way to refresh the cache or rip this out because
+    # It's going to keep being confusing.
     feeder = feeders[input.device_id]
     state = getattr(feeder, "state", None)
     is_online = getattr(state, "online", None) if state else None

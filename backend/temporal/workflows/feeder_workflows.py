@@ -13,6 +13,10 @@ ACTIVITY_RETRY_POLICY = RetryPolicy(
     maximum_interval=timedelta(seconds=30),
 )
 
+# TODO: should I add a separate retry policy for feeding? 
+# Increase backoff interval, maybe try a few more times
+# since feeding is a critical task 
+
 # Continue-as-new after this many loop iterations to prevent unbounded event
 # history growth. Each iteration adds ~2-6 events (timers + activities), so
 # 100 iterations stays well under Temporal's 50k event limit.
