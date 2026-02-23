@@ -103,6 +103,9 @@ class DailyScheduledFeedingWorkflow:
         Instead, we call tz.utcoffset() (a Python method the proxy can forward)
         and apply the offset manually.
 
+        This method is replay safe. workflow.now is deterministic during replay, as is pure computation (ZoneInfo, utcoffset, arithmetic). 
+        No I/O, no system clock, no randomness.
+
         This method doesn't account for daylight savings time transitions.
         Although bunnies don't understand DST, they will just have to wait an extra hour once a year.
         We all have hardships in life.
