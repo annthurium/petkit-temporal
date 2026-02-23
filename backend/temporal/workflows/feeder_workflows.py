@@ -185,7 +185,7 @@ class DailyScheduledFeedingWorkflow:
             else:
                 # Scheduled feed time reached — skip if a manual feed was recently done
                 if self._skip_next_scheduled:
-                    workflow.logger.info(
+                    workflow.logger.warning(
                         f"Skipping scheduled feed for device {input.device_id} "
                         "due to recent manual feed"
                     )
