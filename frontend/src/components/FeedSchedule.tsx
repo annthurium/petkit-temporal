@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import {
   type FeedSchedule,
-  cancelFeed,
   deleteSchedule,
   fetchSchedule,
   getApiErrorMessage,
@@ -79,22 +78,6 @@ export default function FeedSchedulePanel({ feederId, onDone }: Props) {
     } catch (error: unknown) {
       setFeedMessageTone('error');
       setFeedMessage(getApiErrorMessage(error, 'Failed to feed'));
-    } finally {
-      setFeedLoading(false);
-    }
-  };
-
-  const handleCancel = async () => {
-    setFeedLoading(true);
-    setFeedMessage(null);
-    try {
-      await cancelFeed(feederId);
-      setFeedMessageTone('success');
-      setFeedMessage('Feed cancelled');
-      onDone();
-    } catch (error: unknown) {
-      setFeedMessageTone('error');
-      setFeedMessage(getApiErrorMessage(error, 'Failed to cancel feed'));
     } finally {
       setFeedLoading(false);
     }
@@ -263,13 +246,6 @@ export default function FeedSchedulePanel({ feederId, onDone }: Props) {
             className="px-6 py-2 bg-neon-pink/20 text-neon-pink border border-neon-pink/40 rounded-lg font-medium hover:bg-neon-pink/30 hover:neon-glow-pink disabled:opacity-50 transition-all duration-300"
           >
             {feedLoading ? 'Sending...' : 'Feed Now'}
-          </button>
-          <button
-            onClick={handleCancel}
-            disabled={feedLoading}
-            className="px-6 py-2 bg-vapor-danger/10 text-vapor-danger border border-vapor-danger/40 rounded-lg font-medium hover:bg-vapor-danger/20 disabled:opacity-50 transition-all duration-300"
-          >
-            Cancel Feed
           </button>
         </div>
         {feedMessage && (

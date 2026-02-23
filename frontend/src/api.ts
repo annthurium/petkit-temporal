@@ -76,7 +76,6 @@ export interface ManualFeedResponse {
 
 export const manualFeed = (id: number, payload: { amount?: number; amount1?: number; amount2?: number }) =>
   api.post<ManualFeedResponse>(`/feeders/${id}/feed`, payload).then(r => r.data);
-export const cancelFeed = (id: number) => api.post(`/feeders/${id}/feed/cancel`).then(r => r.data);
 export const updateSettings = (id: number, settings: Record<string, unknown>) =>
   api.post(`/feeders/${id}/settings`, { settings }).then(r => r.data);
 export const resetDesiccant = (id: number) => api.post(`/feeders/${id}/desiccant/reset`).then(r => r.data);
