@@ -38,9 +38,7 @@ async def trigger_feed(input: ManualFeedInput) -> dict:
     feeders = get_feeders(client)
 
     if input.device_id not in feeders:
-        # petkit_entities dict is populated once, during app startup
-        # here we are fetching a specific device from that cached data
-        # if the device isn't in the dict, retries won't change the result
+        # if the device isn't in the petkit entities cache, retries won't change the result
         raise ApplicationError(f"Feeder {input.device_id} not found", non_retryable=True)
 
     payload = {}
@@ -70,7 +68,7 @@ async def trigger_feed(input: ManualFeedInput) -> dict:
 class VerifyFeedInput:
     device_id: int
     is_manual: bool = False
-    not_before: str | None = None
+    not_before: str | None = None # isoformat time string 
 
 
 @dataclass

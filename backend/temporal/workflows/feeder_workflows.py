@@ -12,9 +12,6 @@ ACTIVITY_RETRY_POLICY = RetryPolicy(
     initial_interval=timedelta(seconds=2),
     maximum_interval=timedelta(seconds=30),
 )
-# TODO: should I add a separate retry policy for feeding?
-# Increase backoff interval, maybe try a few more times
-# since feeding is a critical task
 
 # Continue-as-new after this many loop iterations to prevent unbounded event
 # history growth. Each iteration adds ~2-6 events (timers + activities), so
@@ -187,6 +184,8 @@ class DailyScheduledFeedingWorkflow:
                 is_manual = True
             else:
                 # Scheduled feed time reached — skip if a manual feed was recently done
+                # This is expected behavior but we're using log level warn to make sure this info is surfaced
+                # since the UI doesn't currently show skipped feeding history.
                 if self._skip_next_scheduled:
                     workflow.logger.warning(
                         f"Skipping scheduled feed for device {input.device_id} "
@@ -198,12 +197,12 @@ class DailyScheduledFeedingWorkflow:
                 feed_input = ManualFeedInput(device_id=input.device_id, amount=input.amount)
                 is_manual = False
 
-            # === SAGA: trigger -> verify -> compensate ===
+            # === SAGA: 1) trigger feed -> 2) verify feed -> 3) compensate on failure ===
 
             feed_type = "Manual" if is_manual else "Scheduled"
             failure_reason = None
 
-            # Step 1: Trigger the feed
+            # Step 1/3: Trigger the feed
             try:
                 await workflow.execute_activity(
                     trigger_feed,
@@ -228,11 +227,11 @@ class DailyScheduledFeedingWorkflow:
 
                 # Brief delay to let the device process the command.
                 # PetKit's cloud API updates asynchronously after the command is sent.
-                # TODO: make this a const at the top of the file, I no likey arbitrary magic numbers
-                await asyncio.sleep(12)
+                VERIFICATION_DELAY_IN_SECONDS = 12
+                await asyncio.sleep(VERIFICATION_DELAY_IN_SECONDS)
                 verify_not_before = workflow.now().isoformat()
 
-                # Step 2: Verify the feed was executed by the device.
+                # Step 2/3: Verify the feed was executed by the device.
                 verify_result = await workflow.execute_activity(
                     verify_feed,
                     VerifyFeedInput(
@@ -264,7 +263,7 @@ class DailyScheduledFeedingWorkflow:
                     )
 
             if failure_reason is not None:
-                # Step 3 (compensation): Alert the user on failure
+                # Step 3/3 (compensation): Alert the user on failure
                 workflow.logger.warning(
                     f"{feed_type} feeding NOT verified for device "
                     f"{input.device_id}: {failure_reason}"

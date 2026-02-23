@@ -186,7 +186,7 @@ async def manual_feed_endpoint(device_id: int, req: ManualFeedRequest):
         return {"status": "ok", "via": "workflow"}
     except RPCError:
         # No workflow running for this device, fall back to direct API call
-        logger.warning("No Temporal workfow running for device, falling back to direct PetKit API call")
+        logger.warning("No Temporal workflow running for device, falling back to direct PetKit API call")
         pass
     except Exception as e:
         logger.warning("Unexpected error signaling workflow: %s: %s", type(e).__name__, e)
