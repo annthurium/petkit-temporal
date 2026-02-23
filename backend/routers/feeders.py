@@ -239,29 +239,6 @@ async def food_replenished(device_id: int):
     return {"status": "ok"}
 
 
-# Currently unused in the UI — controls PetKit's built-in device schedule,
-# not the Temporal-managed schedule.
-@router.post("/{device_id}/schedule/remove")
-async def remove_schedule(device_id: int):
-    client = await get_client()
-    feeders = get_feeders(client)
-    if device_id not in feeders:
-        raise HTTPException(404, "Feeder not found")
-    await client.send_api_request(device_id, FeederCommand.REMOVE_DAILY_FEED, None)
-    return {"status": "ok"}
-
-
-# Currently unused in the UI — see remove_schedule above.
-@router.post("/{device_id}/schedule/restore")
-async def restore_schedule(device_id: int):
-    client = await get_client()
-    feeders = get_feeders(client)
-    if device_id not in feeders:
-        raise HTTPException(404, "Feeder not found")
-    await client.send_api_request(device_id, FeederCommand.RESTORE_DAILY_FEED, None)
-    return {"status": "ok"}
-
-
 @router.post("/{device_id}/refresh")
 async def refresh_feeder(device_id: int):
     client = await refresh_data()

@@ -14,12 +14,6 @@ Note: due to PetKit's janky authentication supporting only once device at a time
 
 - Configure a PetKit automated feeder as per instructions that come with the device. This app has been developed using the D4 Fresh Element Solo.
 
-- Create a Python virtual environment:
-
-```bash
-python3 -m venv .venv
-```
-
 ### Prerequisites
 
 - Python 3.12+
