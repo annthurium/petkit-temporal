@@ -23,6 +23,9 @@ from backend.temporal.activities.feeder_activities import (
     ManualFeedInput,
     VerifyFeedInput,
     VerifyFeedResult,
+    _dedup_check,
+    _dedup_record,
+    _feed_dedup_cache,
     alert_feed_failure,
     trigger_feed,
     verify_feed,
@@ -91,6 +94,127 @@ class TestTriggerFeedActivity:
         ):
             with pytest.raises(ApplicationError, match="not found"):
                 await trigger_feed(ManualFeedInput(device_id=999, amount=10))
+
+
+# ---------------------------------------------------------------------------
+# Idempotency: dedup cache helpers
+# ---------------------------------------------------------------------------
+
+
+class TestDedupCache:
+    def setup_method(self):
+        _feed_dedup_cache.clear()
+
+    def test_check_returns_none_for_unknown_key(self):
+        assert _dedup_check("unknown") is None
+
+    def test_record_then_check_returns_cached_result(self):
+        _dedup_record("key1", {"status": "ok", "device_id": 100})
+        assert _dedup_check("key1") == {"status": "ok", "device_id": 100}
+
+    def test_expired_entry_returns_none(self):
+        import time
+
+        _feed_dedup_cache["old"] = ({"status": "ok"}, time.monotonic() - 1)
+        assert _dedup_check("old") is None
+        assert "old" not in _feed_dedup_cache
+
+    def test_record_evicts_expired_entries(self):
+        import time
+
+        _feed_dedup_cache["stale"] = ({"status": "ok"}, time.monotonic() - 1)
+        _dedup_record("fresh", {"status": "ok", "device_id": 200})
+        assert "stale" not in _feed_dedup_cache
+        assert _dedup_check("fresh") is not None
+
+
+# ---------------------------------------------------------------------------
+# Idempotency: trigger_feed retry dedup
+# ---------------------------------------------------------------------------
+
+
+class TestTriggerFeedIdempotency:
+    def setup_method(self):
+        _feed_dedup_cache.clear()
+
+    def _activity_info_patch(self, **kwargs):
+        """Patch temporalio.activity.info to return a fake ActivityInfo."""
+        return patch(
+            "temporalio.activity.info",
+            return_value=MagicMock(**kwargs),
+        )
+
+    @pytest.mark.asyncio
+    async def test_retry_returns_cached_result_without_calling_api(self):
+        """A retried trigger_feed should return the cached result without hitting the PetKit API."""
+        fake_client = AsyncMock()
+        feeders = {100: _make_feeder(100)}
+        info_kwargs = dict(
+            workflow_id="wf-1", workflow_run_id="run-1", activity_id="act-1", attempt=1,
+        )
+
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+            self._activity_info_patch(**info_kwargs),
+        ):
+            # First call — should hit the API and cache the result
+            result1 = await trigger_feed(ManualFeedInput(device_id=100, amount=10))
+            assert result1 == {"status": "ok", "device_id": 100}
+            assert fake_client.send_api_request.await_count == 1
+
+        # Simulate retry (attempt 2) — same activity identity, fresh mocks
+        info_kwargs["attempt"] = 2
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+            self._activity_info_patch(**info_kwargs),
+        ):
+            fake_client.send_api_request.reset_mock()
+            result2 = await trigger_feed(ManualFeedInput(device_id=100, amount=10))
+            assert result2 == {"status": "ok", "device_id": 100}
+            # API should NOT have been called again
+            fake_client.send_api_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_different_activity_ids_are_not_deduped(self):
+        """Different activity invocations (different activity_id) should each call the API."""
+        fake_client = AsyncMock()
+        feeders = {100: _make_feeder(100)}
+
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+            self._activity_info_patch(
+                workflow_id="wf-1", workflow_run_id="run-1", activity_id="act-1", attempt=1,
+            ),
+        ):
+            await trigger_feed(ManualFeedInput(device_id=100, amount=10))
+
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+            self._activity_info_patch(
+                workflow_id="wf-1", workflow_run_id="run-1", activity_id="act-2", attempt=1,
+            ),
+        ):
+            await trigger_feed(ManualFeedInput(device_id=100, amount=5))
+
+        assert fake_client.send_api_request.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_dedup_outside_activity_context(self):
+        """Without an activity context (e.g. unit tests), dedup is skipped gracefully."""
+        fake_client = AsyncMock()
+        feeders = {100: _make_feeder(100)}
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+        ):
+            # Call twice — both should hit the API since there's no activity context
+            await trigger_feed(ManualFeedInput(device_id=100, amount=10))
+            await trigger_feed(ManualFeedInput(device_id=100, amount=10))
+            assert fake_client.send_api_request.await_count == 2
 
 
 # ---------------------------------------------------------------------------

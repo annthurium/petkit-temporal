@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -6,6 +7,41 @@ from temporalio.exceptions import ApplicationError
 
 from backend.client import get_client, get_feeders, refresh_data
 from backend.config import PETKIT_TIMEZONE
+
+# ---------------------------------------------------------------------------
+# Idempotency cache for trigger_feed
+# ---------------------------------------------------------------------------
+# Temporal retries an activity when it times out or the worker crashes after
+# the API call succeeds but before the result is recorded.  For trigger_feed
+# this would dispense food twice.  We cache successful results keyed by the
+# activity's stable identity (workflow_id + run_id + activity_id), which
+# stays the same across retry attempts.  A 5-minute TTL covers the worst-
+# case retry window (3 attempts × 30s timeout + backoff ≈ 66s).
+
+_DEDUP_TTL_SECONDS = 300
+
+_feed_dedup_cache: dict[str, tuple[dict, float]] = {}
+
+
+def _dedup_check(key: str) -> dict | None:
+    """Return cached result if *key* exists and hasn't expired."""
+    entry = _feed_dedup_cache.get(key)
+    if entry is None:
+        return None
+    result, expiry = entry
+    if time.monotonic() > expiry:
+        del _feed_dedup_cache[key]
+        return None
+    return result
+
+
+def _dedup_record(key: str, result: dict) -> None:
+    """Store *result* under *key* with a TTL, evicting stale entries."""
+    now = time.monotonic()
+    expired = [k for k, (_, exp) in _feed_dedup_cache.items() if now > exp]
+    for k in expired:
+        del _feed_dedup_cache[k]
+    _feed_dedup_cache[key] = (result, now + _DEDUP_TTL_SECONDS)
 
 
 @dataclass
@@ -31,7 +67,33 @@ class ManualFeedInput:
 
 @activity.defn
 async def trigger_feed(input: ManualFeedInput) -> dict:
-    """Trigger a feeding on a feeder device."""
+    """Trigger a feeding on a feeder device.
+
+    Uses an in-process idempotency cache keyed by activity identity to
+    prevent duplicate feeds when Temporal retries after a timeout where
+    the API call actually succeeded.
+    """
+    # Build a dedup key from the activity's stable identity.  activity.info()
+    # raises RuntimeError outside a real activity context (e.g. in unit tests);
+    # in that case we skip the dedup check entirely.
+    dedup_key: str | None = None
+    try:
+        info = activity.info()
+        dedup_key = f"{info.workflow_id}-{info.workflow_run_id}-{info.activity_id}"
+    except RuntimeError:
+        pass
+
+    if dedup_key is not None:
+        cached = _dedup_check(dedup_key)
+        if cached is not None:
+            activity.logger.info(
+                "Skipping duplicate feed for device %s (retry of activity %s, attempt %s)",
+                input.device_id,
+                info.activity_id,
+                info.attempt,
+            )
+            return cached
+
     from pypetkitapi.command import FeederCommand
 
     client = await get_client()
@@ -61,7 +123,10 @@ async def trigger_feed(input: ManualFeedInput) -> dict:
             raise ApplicationError(str(e)) from e
         raise
 
-    return {"status": "ok", "device_id": input.device_id}
+    result = {"status": "ok", "device_id": input.device_id}
+    if dedup_key is not None:
+        _dedup_record(dedup_key, result)
+    return result
 
 
 @dataclass
