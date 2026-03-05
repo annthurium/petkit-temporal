@@ -174,35 +174,21 @@ async def manual_feed_endpoint(device_id: int, req: ManualFeedRequest):
 
     logger.info("Manual feed requested for device %s: %s", device_id, req.model_dump(exclude_none=True))
 
-    # Try to signal the scheduled feeding workflow if one is running.
-    # This ensures manual feeds reset the schedule timer and skip the next scheduled feed.
+    # Signal the scheduled feeding workflow to trigger an immediate feed.
+    # This ensures the feed goes through the workflow's saga (trigger -> verify -> compensate)
+    # and that the next scheduled feed is skipped.
+    temporal_client = await get_temporal_client()
+    handle = temporal_client.get_workflow_handle(f"scheduled-feeding-{device_id}")
+
     try:
-        temporal_client = await get_temporal_client()
-        handle = temporal_client.get_workflow_handle(f"scheduled-feeding-{device_id}")
         await handle.signal(
             "manual_feed_now",
             ManualFeedSignal(amount=req.amount, amount1=req.amount1, amount2=req.amount2),
         )
-        return {"status": "ok", "via": "workflow"}
     except RPCError:
-        # No workflow running for this device, fall back to direct API call
-        logger.warning("No Temporal workflow running for device, falling back to direct PetKit API call")
-        pass
-    except Exception as e:
-        logger.warning("Unexpected error signaling workflow: %s: %s", type(e).__name__, e)
+        raise HTTPException(409, "No feeding schedule is running for this device")
 
-    # Direct API call fallback
-    payload = {}
-    if req.amount is not None:
-        payload["amount"] = req.amount
-    if req.amount1 is not None:
-        payload["amount1"] = req.amount1
-    if req.amount2 is not None:
-        payload["amount2"] = req.amount2
-
-    await petkit_client.send_api_request(device_id, FeederCommand.MANUAL_FEED, payload)
-    logger.warning("fallback to direct api call")
-    return {"status": "ok", "via": "direct"}
+    return {"status": "ok", "via": "workflow"}
 
 
 class UpdateSettingsRequest(BaseModel):

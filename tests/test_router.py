@@ -165,14 +165,10 @@ class TestGetFeeder:
 
 class TestManualFeed:
     @pytest.mark.asyncio
-    async def test_dispatches_feed_direct(self, client, fake_client):
-        """Falls back to direct API call when no workflow is running."""
+    async def test_409_when_no_workflow_running(self, client):
+        """Returns 409 when no feeding schedule workflow is running."""
         resp = await client.post("/api/feeders/1/feed", json={"amount": 5})
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["status"] == "ok"
-        assert body["via"] == "direct"
-        fake_client.send_api_request.assert_awaited_once()
+        assert resp.status_code == 409
 
     @pytest.mark.asyncio
     async def test_dispatches_feed_via_workflow(self, client, mock_temporal_client):
