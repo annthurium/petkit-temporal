@@ -118,6 +118,7 @@ async def client(fake_client, mock_temporal_client):
         patch("backend.routers.feeders.refresh_data", return_value=fake_client),
         patch("backend.routers.feeders.get_feeders", side_effect=_mock_get_feeders),
         patch("backend.routers.feeders.get_temporal_client", return_value=mock_temporal_client),
+        patch("backend.main.run_temporal_worker_with_retry", new_callable=AsyncMock),
         patch("backend.client.shutdown", new_callable=AsyncMock),
     ):
         transport = ASGITransport(app=app)

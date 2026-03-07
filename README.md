@@ -47,23 +47,24 @@ cd frontend && npm install
 
 ## Running
 
-Start the Temporal server, backend, worker, and frontend in separate terminals:
+Start the Temporal server, backend, and frontend in separate terminals:
 
 ```bash
 # Temporal dev server
 temporal server start-dev
 
-# Backend API server (from project root)
+# Backend (from project root)
 uv run uvicorn backend.main:app --reload
-
-# Temporal worker (from project root)
-uv run python -m backend.temporal.worker
 
 # Frontend (from frontend/)
 cd frontend && npm run dev
 ```
 
-The API server and worker run as independent processes. The API server handles HTTP requests and communicates with Temporal to signal/query workflows. The worker processes workflow and activity tasks.
+The backend automatically starts a Temporal worker as a background task when the server boots. You can also run the worker standalone:
+
+```bash
+uv run python -m backend.temporal.worker
+```
 
 The Temporal web UI is available at `http://localhost:8233` for inspecting workflows.
 
@@ -79,7 +80,7 @@ uv run pytest tests/ -v
 
 ```
 backend/
-  main.py            # FastAPI app setup and lifespan
+  main.py            # FastAPI app setup, lifespan, Temporal worker startup
   client.py          # PetKit API client singleton
   config.py          # Environment variable config
   routers/
