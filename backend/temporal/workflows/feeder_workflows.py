@@ -241,6 +241,7 @@ class DailyScheduledFeedingWorkflow:
                     ),
                     start_to_close_timeout=timedelta(seconds=30),
                     retry_policy=ACTIVITY_RETRY_POLICY,
+                    summary="Verify the most recent feed was executed by the device.",
                 )
 
                 if verify_result.outcome == "verified":
@@ -276,6 +277,7 @@ class DailyScheduledFeedingWorkflow:
                     ),
                     start_to_close_timeout=timedelta(seconds=30),
                     retry_policy=ACTIVITY_RETRY_POLICY,
+                    summary="alert the user about most recent feed failure"
                 )
                 self._last_alert = {
                     "device_id": alert.device_id,

@@ -310,12 +310,14 @@ async def set_schedule(device_id: int, req: ScheduleRequest):
         ),
         id=workflow_id,
         task_queue=TEMPORAL_TASK_QUEUE,
+        static_summary="Setting schedule for feeder",
         retry_policy=RetryPolicy(
             maximum_attempts=0,  # unlimited retries
             initial_interval=timedelta(seconds=30),
             backoff_coefficient=2.0,
             maximum_interval=timedelta(minutes=10),
         ),
+        memo={"device_id": device_id, "schedule": req.time, "amount": req.amount},
     )
 
     return {
