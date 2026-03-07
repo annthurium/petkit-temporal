@@ -18,6 +18,7 @@ export default function FeedSchedulePanel({ feederId, onDone }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [backendReachable, setBackendReachable] = useState(true);
   const [time, setTime] = useState('08:00');
   const [amount, setAmount] = useState(10);
 
@@ -38,13 +39,14 @@ export default function FeedSchedulePanel({ feederId, onDone }: Props) {
         const s = await fetchSchedule(feederId);
         if (!isMounted) return;
         setScheduleState(s);
+        setBackendReachable(true);
         if (s) {
           setTime(s.time);
           setAmount(s.amount);
         }
       } catch {
         if (!isMounted) return;
-        setScheduleState(null);
+        setBackendReachable(false);
       } finally {
         if (!hasInitialized && isMounted) {
           setLoading(false);
@@ -117,6 +119,12 @@ export default function FeedSchedulePanel({ feederId, onDone }: Props) {
 
   return (
     <div className="space-y-5">
+      {!backendReachable && (
+        <div className="p-3 rounded-lg bg-vapor-danger/10 border border-vapor-danger/30">
+          <p className="text-sm text-vapor-danger font-semibold">Backend unreachable</p>
+          <p className="text-xs text-vapor-danger/80">Showing last known state. The schedule is still running in Temporal.</p>
+        </div>
+      )}
       {schedule && (
         <div className="p-4 rounded-lg bg-neon-purple/10 border border-neon-purple/20 space-y-1">
           <p className="text-sm text-vapor-muted">Current schedule</p>
