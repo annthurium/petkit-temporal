@@ -5,7 +5,9 @@ from datetime import datetime, timedelta, timezone
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from backend.client import get_client, get_feeders, refresh_data
+from pypetkitapi.exceptions import PetkitSessionExpiredError, PypetkitError
+
+from backend.client import get_client, get_feeders, refresh_data, reset_client
 from backend.config import PETKIT_TIMEZONE
 
 # ---------------------------------------------------------------------------
@@ -96,12 +98,25 @@ async def trigger_feed(input: ManualFeedInput) -> dict:
 
     from pypetkitapi.command import FeederCommand
 
-    client = await get_client()
+    try:
+        client = await get_client()
+    except PetkitSessionExpiredError:
+        await reset_client()
+        raise  # retryable — next attempt gets a fresh session
+
     feeders = get_feeders(client)
 
     if input.device_id not in feeders:
-        # if the device isn't in the petkit entities cache, retries won't change the result
-        raise ApplicationError(f"Feeder {input.device_id} not found", non_retryable=True)
+        # The entities cache may be empty because of a stale session.
+        # Try one refresh before giving up.
+        try:
+            client = await refresh_data()
+        except PetkitSessionExpiredError:
+            await reset_client()
+            raise  # retryable — fresh session on next attempt
+        feeders = get_feeders(client)
+        if input.device_id not in feeders:
+            raise ApplicationError(f"Feeder {input.device_id} not found", non_retryable=True)
 
     payload = {}
     if input.amount is not None:
@@ -113,15 +128,11 @@ async def trigger_feed(input: ManualFeedInput) -> dict:
 
     try:
         await client.send_api_request(input.device_id, FeederCommand.MANUAL_FEED, payload)
-    except Exception as e:
-        from pypetkitapi.exceptions import PypetkitError
-
-        if isinstance(e, PypetkitError):
-            # Wrap PypetkitError so the error message (e.g. "Device is offline")
-            # propagates cleanly to the workflow. Left retryable because device
-            # connectivity is transient — it may come back online between retries.
-            raise ApplicationError(str(e)) from e
-        raise
+    except PetkitSessionExpiredError:
+        await reset_client()
+        raise  # retryable — fresh session on next attempt
+    except PypetkitError as e:
+        raise ApplicationError(str(e)) from e
 
     result = {"status": "ok", "device_id": input.device_id}
     if dedup_key is not None:
@@ -213,7 +224,12 @@ async def verify_feed(input: VerifyFeedInput) -> VerifyFeedResult:
     Refreshes device data from the PetKit cloud API and checks D4 feed
     statistics records for a recent feed event after not_before.
     """
-    client = await refresh_data()
+    try:
+        client = await refresh_data()
+    except PetkitSessionExpiredError:
+        await reset_client()
+        raise  # retryable — fresh session on next attempt
+
     feeders = get_feeders(client)
 
     if input.device_id not in feeders:

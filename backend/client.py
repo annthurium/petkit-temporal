@@ -92,9 +92,19 @@ async def fetch_d4_feed_events(
     return events
 
 
-async def shutdown():
+async def reset_client() -> None:
+    """Tear down the cached client so the next get_client() re-authenticates.
+
+    Called when the PetKit session token expires — clears the singleton and
+    its HTTP session so a fresh login happens on the next request.
+    """
     global _client, _session
+    old_session = _session
     _client = None
-    if _session:
-        await _session.close()
-        _session = None
+    _session = None
+    if old_session:
+        await old_session.close()
+
+
+async def shutdown():
+    await reset_client()

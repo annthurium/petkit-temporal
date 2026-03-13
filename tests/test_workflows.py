@@ -91,9 +91,83 @@ class TestTriggerFeedActivity:
         with (
             patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
             patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
+            patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
         ):
             with pytest.raises(ApplicationError, match="not found"):
                 await trigger_feed(ManualFeedInput(device_id=999, amount=10))
+
+
+# ---------------------------------------------------------------------------
+# Session expiry recovery
+# ---------------------------------------------------------------------------
+
+
+class TestSessionExpiryRecovery:
+    """When the PetKit session token expires, activities should reset the
+    client singleton and let Temporal retry with a fresh session."""
+
+    @pytest.mark.asyncio
+    async def test_trigger_feed_resets_client_on_expired_session_from_get_client(self):
+        from pypetkitapi.exceptions import PetkitSessionExpiredError
+
+        with (
+            patch(
+                "backend.temporal.activities.feeder_activities.get_client",
+                side_effect=PetkitSessionExpiredError("Session expired"),
+            ),
+            patch("backend.temporal.activities.feeder_activities.reset_client", new_callable=AsyncMock) as mock_reset,
+        ):
+            with pytest.raises(PetkitSessionExpiredError):
+                await trigger_feed(ManualFeedInput(device_id=100, amount=10))
+            mock_reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_trigger_feed_resets_client_on_expired_session_from_send_api(self):
+        from pypetkitapi.exceptions import PetkitSessionExpiredError
+
+        fake_client = AsyncMock()
+        fake_client.send_api_request.side_effect = PetkitSessionExpiredError("Session expired")
+        feeders = {100: _make_feeder(100)}
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", return_value=feeders),
+            patch("backend.temporal.activities.feeder_activities.reset_client", new_callable=AsyncMock) as mock_reset,
+        ):
+            with pytest.raises(PetkitSessionExpiredError):
+                await trigger_feed(ManualFeedInput(device_id=100, amount=10))
+            mock_reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_trigger_feed_refreshes_before_declaring_not_found(self):
+        """When the entities cache is empty, trigger_feed tries refresh_data
+        before raising non-retryable 'not found'."""
+        fake_client = AsyncMock()
+        refreshed_client = AsyncMock()
+        feeders_after_refresh = {100: _make_feeder(100)}
+        with (
+            patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
+            patch("backend.temporal.activities.feeder_activities.get_feeders", side_effect=[{}, feeders_after_refresh]),
+            patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=refreshed_client),
+        ):
+            result = await trigger_feed(ManualFeedInput(device_id=100, amount=10))
+            assert result["status"] == "ok"
+            # The API call should use the refreshed client
+            refreshed_client.send_api_request.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_verify_feed_resets_client_on_expired_session(self):
+        from pypetkitapi.exceptions import PetkitSessionExpiredError
+
+        with (
+            patch(
+                "backend.temporal.activities.feeder_activities.refresh_data",
+                side_effect=PetkitSessionExpiredError("Session expired"),
+            ),
+            patch("backend.temporal.activities.feeder_activities.reset_client", new_callable=AsyncMock) as mock_reset,
+        ):
+            with pytest.raises(PetkitSessionExpiredError):
+                await verify_feed(VerifyFeedInput(device_id=100))
+            mock_reset.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +390,7 @@ class TestApplicationErrorRetryBehavior:
         with (
             patch("backend.temporal.activities.feeder_activities.get_client", return_value=fake_client),
             patch("backend.temporal.activities.feeder_activities.get_feeders", return_value={}),
+            patch("backend.temporal.activities.feeder_activities.refresh_data", return_value=fake_client),
         ):
             with pytest.raises(ApplicationError) as exc_info:
                 await trigger_feed(ManualFeedInput(device_id=999, amount=10))
