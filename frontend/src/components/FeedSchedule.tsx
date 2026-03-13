@@ -30,6 +30,16 @@ export default function FeedSchedulePanel({ feederId, onDone }: Props) {
   useEffect(() => {
     let isMounted = true;
     let hasInitialized = false;
+    let timeoutId: number | undefined;
+    let consecutiveFailures = 0;
+
+    const BASE_INTERVAL_MS = 30_000;
+    const MAX_INTERVAL_MS = 5 * 60_000;
+
+    const getNextInterval = () => {
+      if (consecutiveFailures === 0) return BASE_INTERVAL_MS;
+      return Math.min(BASE_INTERVAL_MS * 2 ** consecutiveFailures, MAX_INTERVAL_MS);
+    };
 
     const loadSchedule = async () => {
       if (!hasInitialized && isMounted) {
@@ -40,6 +50,7 @@ export default function FeedSchedulePanel({ feederId, onDone }: Props) {
         if (!isMounted) return;
         setScheduleState(s);
         setBackendReachable(true);
+        consecutiveFailures = 0;
         if (s) {
           setTime(s.time);
           setAmount(s.amount);
@@ -47,20 +58,23 @@ export default function FeedSchedulePanel({ feederId, onDone }: Props) {
       } catch {
         if (!isMounted) return;
         setBackendReachable(false);
+        consecutiveFailures++;
       } finally {
         if (!hasInitialized && isMounted) {
           setLoading(false);
         }
         hasInitialized = true;
+        if (isMounted) {
+          timeoutId = window.setTimeout(loadSchedule, getNextInterval());
+        }
       }
     };
 
     loadSchedule();
-    const interval = window.setInterval(loadSchedule, 5000);
 
     return () => {
       isMounted = false;
-      window.clearInterval(interval);
+      window.clearTimeout(timeoutId);
     };
   }, [feederId]);
 
