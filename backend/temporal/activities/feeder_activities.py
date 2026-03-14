@@ -248,7 +248,7 @@ async def verify_feed(input: VerifyFeedInput) -> VerifyFeedResult:
     return VerifyFeedResult(
         outcome="failed",
         device_id=input.device_id,
-        error_msg="No recent feed record found in device telemetry",
+        error_msg="Most recent feed could not be verified",
     )
 
 
