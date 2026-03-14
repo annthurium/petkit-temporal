@@ -1,13 +1,25 @@
-from datetime import datetime, timedelta
-from http import HTTPMethod
+from dataclasses import asdict
+from datetime import timedelta
+
+import logging
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from pypetkitapi.command import DeviceCommand, FeederCommand
-from pypetkitapi.const import PetkitEndpoint
+from temporalio.client import WorkflowExecutionStatus
+from temporalio.common import RetryPolicy
+from temporalio.service import RPCError
 
-from backend.client import get_client, refresh_data, get_feeders, send_api_request_with_retry
-from backend.scheduler import load_schedules, save_schedules, mark_skip
+from backend.client import get_client, refresh_data, get_feeders, fetch_d4_feed_events
+from backend.config import TEMPORAL_TASK_QUEUE, PETKIT_TIMEZONE
+from backend.temporal.client import get_temporal_client
+from backend.temporal.workflows.feeder_workflows import (
+    ManualFeedSignal,
+    DailyScheduledFeedingInput,
+    DailyScheduledFeedingWorkflow,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/feeders", tags=["feeders"])
 
@@ -77,44 +89,18 @@ def _serialize_feeder(feeder) -> dict:
 
 
 async def _fetch_d4_records(client, device_id: int) -> dict:
-    """Fetch feed history directly from the D4 feedStatistic endpoint.
-
-    The pypetkitapi library doesn't parse this response correctly — it expects
-    {eat: [], feed: [], ...} but D4 returns {YYYYMMDD: {seconds: amount}, realAmount: N}.
-    We make the raw request ourselves and convert it.
-    """
-    today = datetime.now()
-    dates = [(today - timedelta(days=i)).strftime("%Y%m%d") for i in range(7)]
-    all_events = []
-
-    for date_str in dates:
-        params = {"date": date_str, "type": 0, "deviceId": device_id}
-        response = await client.req.request(
-            method=HTTPMethod.POST,
-            url=f"d4/{PetkitEndpoint.FEED_STATISTIC}",
-            params=params,
-            headers=await client.get_session_id(),
-        )
-        if not isinstance(response, dict):
-            continue
-        day_data = response.get(date_str)
-        if not isinstance(day_data, dict):
-            continue
-        for seconds_str, amount in day_data.items():
-            try:
-                seconds = int(seconds_str)
-            except ValueError:
-                continue
-            hours, remainder = divmod(seconds, 3600)
-            minutes = remainder // 60
-            all_events.append({
-                "date": f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}",
-                "time": f"{hours:02d}:{minutes:02d}",
-                "amount": amount,
-            })
-
-    all_events.sort(key=lambda e: (e["date"], e["time"]), reverse=True)
-    return {"eat": [], "feed": all_events, "move": [], "pet": []}
+    """Fetch feed history for a D4 feeder, formatted for the records endpoint."""
+    events = await fetch_d4_feed_events(client, device_id, days=7)
+    feed_list = []
+    for ev in events:
+        hours, remainder = divmod(ev["seconds"], 3600)
+        minutes = remainder // 60
+        feed_list.append({
+            "date": ev["date"].strftime("%Y-%m-%d"),
+            "time": f"{hours:02d}:{minutes:02d}",
+            "amount": ev["amount"],
+        })
+    return {"eat": [], "feed": feed_list, "move": [], "pet": []}
 
 
 def _serialize_records(feeder) -> dict:
@@ -176,39 +162,33 @@ class ManualFeedRequest(BaseModel):
     amount2: int | None = None
 
 
-
 @router.post("/{device_id}/feed")
-async def manual_feed(device_id: int, req: ManualFeedRequest):
-    client = await get_client()
-    feeders = get_feeders(client)
+async def manual_feed_endpoint(device_id: int, req: ManualFeedRequest):
+    petkit_client = await get_client()
+    feeders = get_feeders(petkit_client)
     if device_id not in feeders:
         raise HTTPException(404, "Feeder not found")
 
-    payload = {}
-    if req.amount is not None:
-        payload["amount"] = req.amount
-    if req.amount1 is not None:
-        payload["amount1"] = req.amount1
-    if req.amount2 is not None:
-        payload["amount2"] = req.amount2
-
-    if not payload:
+    if req.amount is None and req.amount1 is None and req.amount2 is None:
         raise HTTPException(400, "Must provide amount, amount1, or amount2")
 
-    await send_api_request_with_retry(client, device_id, FeederCommand.MANUAL_FEED, payload)
-    # Skip the next scheduled meal if a manual feed was initiated
-    mark_skip(device_id)
-    return {"status": "ok"}
+    logger.info("Manual feed requested for device %s: %s", device_id, req.model_dump(exclude_none=True))
 
+    # Signal the scheduled feeding workflow to trigger an immediate feed.
+    # This ensures the feed goes through the workflow's saga (trigger -> verify -> compensate)
+    # and that the next scheduled feed is skipped.
+    temporal_client = await get_temporal_client()
+    handle = temporal_client.get_workflow_handle(f"scheduled-feeding-{device_id}")
 
-@router.post("/{device_id}/feed/cancel")
-async def cancel_feed(device_id: int):
-    client = await get_client()
-    feeders = get_feeders(client)
-    if device_id not in feeders:
-        raise HTTPException(404, "Feeder not found")
-    await client.send_api_request(device_id, FeederCommand.CANCEL_MANUAL_FEED, None)
-    return {"status": "ok"}
+    try:
+        await handle.signal(
+            "manual_feed_now",
+            ManualFeedSignal(amount=req.amount, amount1=req.amount1, amount2=req.amount2),
+        )
+    except RPCError:
+        raise HTTPException(409, "No feeding schedule is running for this device")
+
+    return {"status": "ok", "via": "workflow"}
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -245,29 +225,6 @@ async def food_replenished(device_id: int):
     return {"status": "ok"}
 
 
-# Currently unused in the UI — controls PetKit's built-in device schedule,
-# not the custom schedule in schedules.json.
-@router.post("/{device_id}/schedule/remove")
-async def remove_schedule(device_id: int):
-    client = await get_client()
-    feeders = get_feeders(client)
-    if device_id not in feeders:
-        raise HTTPException(404, "Feeder not found")
-    await client.send_api_request(device_id, FeederCommand.REMOVE_DAILY_FEED, None)
-    return {"status": "ok"}
-
-
-# Currently unused in the UI — see remove_schedule above.
-@router.post("/{device_id}/schedule/restore")
-async def restore_schedule(device_id: int):
-    client = await get_client()
-    feeders = get_feeders(client)
-    if device_id not in feeders:
-        raise HTTPException(404, "Feeder not found")
-    await client.send_api_request(device_id, FeederCommand.RESTORE_DAILY_FEED, None)
-    return {"status": "ok"}
-
-
 @router.post("/{device_id}/refresh")
 async def refresh_feeder(device_id: int):
     client = await refresh_data()
@@ -284,37 +241,110 @@ class ScheduleRequest(BaseModel):
 
 @router.get("/{device_id}/schedule")
 async def get_schedule(device_id: int):
+    """Query the Temporal workflow for the current schedule status."""
     client = await get_client()
     feeders = get_feeders(client)
     if device_id not in feeders:
         raise HTTPException(404, "Feeder not found")
-    schedules = load_schedules()
-    return schedules.get(str(device_id))
+
+    temporal_client = await get_temporal_client()
+    workflow_id = f"scheduled-feeding-{device_id}"
+
+    try:
+        handle = temporal_client.get_workflow_handle(workflow_id)
+        desc = await handle.describe()
+        # Check that the workflow is actually running
+        if desc.status is not None and desc.status.name != "RUNNING":
+            return None
+        result = await handle.query(DailyScheduledFeedingWorkflow.status)
+        last_feed_result = asdict(result.last_feed_result) if result.last_feed_result else None
+        return {
+            "time": f"{result.hour:02d}:{result.minute:02d}",
+            "amount": result.amount,
+            "skip_next": result.skip_next_scheduled,
+            "running": True,
+            "workflow_id": workflow_id,
+            "last_alert": result.last_alert,
+            "last_feed_result": last_feed_result,
+        }
+    except RPCError:
+        return None
 
 
 @router.put("/{device_id}/schedule")
 async def set_schedule(device_id: int, req: ScheduleRequest):
-    client = await get_client()
-    feeders = get_feeders(client)
+    """Start a Temporal workflow for scheduled daily feeding.
+
+    If a workflow is already running for this device, it is terminated first.
+    """
+    petkit_client = await get_client()
+    feeders = get_feeders(petkit_client)
     if device_id not in feeders:
         raise HTTPException(404, "Feeder not found")
-    schedules = load_schedules()
-    schedules[str(device_id)] = {
+
+    # Parse HH:MM time string
+    parts = req.time.split(":")
+    hour = int(parts[0])
+    minute = int(parts[1])
+
+    temporal_client = await get_temporal_client()
+    workflow_id = f"scheduled-feeding-{device_id}"
+
+    # Terminate any existing workflow for this device
+    try:
+        handle = temporal_client.get_workflow_handle(workflow_id)
+        desc = await handle.describe()
+        if desc.status == WorkflowExecutionStatus.RUNNING:
+            await handle.terminate("Replaced by new schedule")
+    except RPCError:
+        pass  # No existing workflow, life goes on 😎
+
+    await temporal_client.start_workflow(
+        DailyScheduledFeedingWorkflow.run,
+        DailyScheduledFeedingInput(
+            device_id=device_id,
+            amount=req.amount,
+            hour=hour,
+            minute=minute,
+            timezone=PETKIT_TIMEZONE,
+        ),
+        id=workflow_id,
+        task_queue=TEMPORAL_TASK_QUEUE,
+        static_summary="Setting schedule for feeder",
+        retry_policy=RetryPolicy(
+            maximum_attempts=0,  # unlimited retries
+            initial_interval=timedelta(seconds=30),
+            backoff_coefficient=2.0,
+            maximum_interval=timedelta(minutes=10),
+        ),
+        memo={"device_id": device_id, "schedule": req.time, "amount": req.amount},
+    )
+
+    return {
         "time": req.time,
         "amount": req.amount,
         "skip_next": False,
+        "workflow_id": workflow_id,
+        "last_alert": None,
+        "last_feed_result": None,
     }
-    save_schedules(schedules)
-    return schedules[str(device_id)]
 
 
 @router.delete("/{device_id}/schedule")
 async def delete_schedule(device_id: int):
+    """Cancel the Temporal workflow for scheduled feeding."""
     client = await get_client()
     feeders = get_feeders(client)
     if device_id not in feeders:
         raise HTTPException(404, "Feeder not found")
-    schedules = load_schedules()
-    schedules.pop(str(device_id), None)
-    save_schedules(schedules)
+
+    temporal_client = await get_temporal_client()
+    workflow_id = f"scheduled-feeding-{device_id}"
+
+    try:
+        handle = temporal_client.get_workflow_handle(workflow_id)
+        await handle.cancel()
+    except RPCError:
+        pass  # No workflow running! if it ain't broke don't fix it 
+
     return {"status": "ok"}

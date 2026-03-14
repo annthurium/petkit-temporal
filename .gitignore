@@ -3,3 +3,4 @@ venv/
 __pycache__/
 schedules.json
 .venv/
+temporal.db
