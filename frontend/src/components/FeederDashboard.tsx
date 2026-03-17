@@ -13,7 +13,7 @@ interface Props {
 type Tab = 'status' | 'schedule' | 'history' | 'settings';
 
 export default function FeederDashboard({ feeder, onRefresh }: Props) {
-  const [tab, setTab] = useState<Tab>('status');
+  const [tab, setTab] = useState<Tab>('schedule');
   const [refreshing, setRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
