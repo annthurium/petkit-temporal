@@ -9,12 +9,15 @@ from temporalio.exceptions import ActivityError, ApplicationError
 with workflow.unsafe.imports_passed_through():
     from backend.temporal.activities.feeder_activities import (
         FEEDER_NOT_FOUND,
+        UNKNOWN_COMMAND,
+        DeviceCommandInput,
         FeedAlertInput,
         ManualFeedInput,
         RecentFeedCheckInput,
         VerifyFeedInput,
         alert_feed_failure,
         check_recent_feed,
+        send_device_command,
         trigger_feed,
         verify_feed,
     )
@@ -44,6 +47,16 @@ VERIFY_RETRY_POLICY = RetryPolicy(
 # PetKit's cloud updates asynchronously; give the device a moment before the
 # first verification check.
 VERIFY_INITIAL_DELAY = timedelta(seconds=10)
+
+# Device commands (settings, desiccant reset, food replenished) are idempotent,
+# so they retry normally, except for errors that can never succeed.
+DEVICE_COMMAND_RETRY_POLICY = RetryPolicy(
+    maximum_attempts=3,
+    backoff_coefficient=2.0,
+    initial_interval=timedelta(seconds=2),
+    maximum_interval=timedelta(seconds=30),
+    non_retryable_error_types=[FEEDER_NOT_FOUND, UNKNOWN_COMMAND],
+)
 
 # How many times to send the feed command if verification can't confirm it.
 MAX_FEED_ATTEMPTS = 2
@@ -187,3 +200,31 @@ class FeedWorkflow:
             timestamp=alert.timestamp,
             attempts=attempt,
         )
+
+
+@dataclass
+class DeviceCommandResult:
+    device_id: int
+    command: str
+    status: str = "ok"
+
+
+@workflow.defn
+class DeviceCommandWorkflow:
+    """Send one non-feed command to a feeder (settings, desiccant reset, food replenished).
+
+    A thin wrapper around a single activity. It exists so every PetKit call
+    goes through the worker (ADR 0006) and gets retries plus a record in the
+    Temporal UI.
+    """
+
+    @workflow.run
+    async def run(self, input: DeviceCommandInput) -> DeviceCommandResult:
+        await workflow.execute_activity(
+            send_device_command,
+            input,
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=DEVICE_COMMAND_RETRY_POLICY,
+            summary=f"Send {input.command}",
+        )
+        return DeviceCommandResult(device_id=input.device_id, command=input.command)

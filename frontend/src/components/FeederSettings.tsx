@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import {
+  type DeviceCommandResponse,
   type Feeder,
+  getApiErrorMessage,
   updateSettings,
   resetDesiccant,
   foodReplenished,
@@ -18,33 +20,29 @@ export default function FeederSettings({ feeder, onDone }: Props) {
   const settings = feeder.settings;
   const caps = getCapabilities(feeder.type);
 
-  const toggle = async (key: string, current: number | null) => {
+  const runCommand = async (
+    label: string,
+    fn: () => Promise<DeviceCommandResponse>,
+  ) => {
     setLoading(true);
     setMessage(null);
     try {
-      await updateSettings(feeder.id, { [key]: current ? 0 : 1 });
-      setMessage(`Updated ${key}`);
+      const result = await fn();
+      setMessage(
+        result.status === 'pending'
+          ? `${label} sent — still waiting on the device`
+          : `${label} successful`,
+      );
       onDone();
-    } catch {
-      setMessage(`Failed to update ${key}`);
+    } catch (error: unknown) {
+      setMessage(`${label} failed: ${getApiErrorMessage(error, 'unknown error')}`);
     } finally {
       setLoading(false);
     }
   };
 
-  const action = async (label: string, fn: () => Promise<unknown>) => {
-    setLoading(true);
-    setMessage(null);
-    try {
-      await fn();
-      setMessage(`${label} successful`);
-      onDone();
-    } catch {
-      setMessage(`${label} failed`);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const toggle = (key: string, current: number | null) =>
+    runCommand(`Update ${key}`, () => updateSettings(feeder.id, { [key]: current ? 0 : 1 }));
 
   const toggleItems: { key: string; label: string; value: number | null }[] = settings
     ? [
@@ -102,15 +100,11 @@ export default function FeederSettings({ feeder, onDone }: Props) {
                 min={0}
                 max={10}
                 value={settings.volume}
-                onChange={async (e) => {
-                  setLoading(true);
-                  try {
-                    await updateSettings(feeder.id, { volume: Number(e.target.value) });
-                    onDone();
-                  } finally {
-                    setLoading(false);
-                  }
-                }}
+                onChange={(e) =>
+                  runCommand('Update volume', () =>
+                    updateSettings(feeder.id, { volume: Number(e.target.value) }),
+                  )
+                }
                 className="w-full"
               />
             </div>
@@ -124,13 +118,13 @@ export default function FeederSettings({ feeder, onDone }: Props) {
           <ActionButton
             label="Reset Desiccant"
             disabled={loading}
-            onClick={() => action('Reset desiccant', () => resetDesiccant(feeder.id))}
+            onClick={() => runCommand('Reset desiccant', () => resetDesiccant(feeder.id))}
           />
           {caps.foodReplenished && (
             <ActionButton
               label="Food Replenished"
               disabled={loading}
-              onClick={() => action('Food replenished', () => foodReplenished(feeder.id))}
+              onClick={() => runCommand('Food replenished', () => foodReplenished(feeder.id))}
             />
           )}
         </div>

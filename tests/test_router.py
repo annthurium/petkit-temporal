@@ -1,3 +1,5 @@
+import asyncio
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -88,11 +90,21 @@ def fake_client():
 
 @pytest.fixture
 def mock_temporal_client():
-    """Mock Temporal client. start_workflow returns a handle with the requested ID."""
+    """Mock Temporal client.
+
+    start_workflow returns a handle with the requested ID whose result()
+    returns ``tc.workflow_result`` (an exception instance is raised instead).
+    """
     tc = MagicMock()
+    tc.workflow_result = None
+
+    async def result():
+        if isinstance(tc.workflow_result, BaseException):
+            raise tc.workflow_result
+        return tc.workflow_result
 
     async def start_workflow(*args, **kwargs):
-        return SimpleNamespace(id=kwargs["id"])
+        return SimpleNamespace(id=kwargs["id"], result=result)
 
     tc.start_workflow = AsyncMock(side_effect=start_workflow)
     return tc
@@ -309,14 +321,71 @@ class TestRefreshFeeder:
 # POST /api/feeders/{device_id}/settings
 # ---------------------------------------------------------------------------
 
-class TestUpdateSettings:
-    @pytest.mark.asyncio
-    async def test_updates_settings(self, client, fake_client):
-        resp = await client.post("/api/feeders/1/settings", json={"settings": {"lightMode": 1}})
-        assert resp.status_code == 200
-        fake_client.send_api_request.assert_awaited_once()
+def _workflow_failure(message: str):
+    """Build the exception chain Temporal raises when a command workflow fails."""
+    from temporalio.client import WorkflowFailureError
+    from temporalio.exceptions import ActivityError, ApplicationError
+
+    app_err = ApplicationError(message, type="CommandRejected")
+    activity_err = ActivityError(
+        "Activity task failed",
+        scheduled_event_id=1, started_event_id=2, identity="w", activity_type="send_device_command",
+        activity_id="1", retry_state=None,
+    )
+    activity_err.__cause__ = app_err
+    failure = WorkflowFailureError(cause=activity_err)
+    return failure
+
+
+class TestDeviceCommands:
+    """Settings, desiccant reset, and food replenished go through DeviceCommandWorkflow."""
 
     @pytest.mark.asyncio
-    async def test_404_for_unknown(self, client):
+    @pytest.mark.parametrize(
+        "path,body,command,payload",
+        [
+            ("/api/feeders/1/settings", {"settings": {"lightMode": 1}}, "update_settings", {"lightMode": 1}),
+            ("/api/feeders/1/desiccant/reset", None, "reset_desiccant", None),
+            ("/api/feeders/1/food-replenished", None, "food_replenished", None),
+        ],
+    )
+    async def test_runs_workflow_and_waits(self, client, fake_client, mock_temporal_client, path, body, command, payload):
+        resp = await client.post(path, json=body)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+        args, kwargs = mock_temporal_client.start_workflow.call_args
+        cmd_input = args[1]
+        assert cmd_input.device_id == 1
+        assert cmd_input.command == command
+        assert cmd_input.payload == payload
+        assert kwargs["id"].startswith(f"device-command-1-{command}-")
+        # The API no longer calls PetKit for writes.
+        fake_client.send_api_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failure_returns_502_with_petkit_message(self, client, mock_temporal_client):
+        mock_temporal_client.workflow_result = _workflow_failure("Device is offline")
+        resp = await client.post("/api/feeders/1/desiccant/reset")
+        assert resp.status_code == 502
+        assert resp.json()["detail"] == "Device is offline"
+
+    @pytest.mark.asyncio
+    async def test_slow_command_returns_202_pending(self, client, mock_temporal_client):
+        async def never_finishes():
+            await asyncio.sleep(3600)
+
+        async def start_workflow(*args, **kwargs):
+            return SimpleNamespace(id=kwargs["id"], result=never_finishes)
+
+        mock_temporal_client.start_workflow.side_effect = start_workflow
+        with patch("backend.routers.feeders.DEVICE_COMMAND_WAIT", timedelta(milliseconds=50)):
+            resp = await client.post("/api/feeders/1/food-replenished")
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_404_for_unknown(self, client, mock_temporal_client):
         resp = await client.post("/api/feeders/999/settings", json={"settings": {"lightMode": 1}})
         assert resp.status_code == 404
+        mock_temporal_client.start_workflow.assert_not_awaited()

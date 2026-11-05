@@ -77,13 +77,19 @@ export interface ManualFeedResponse {
 
 export const manualFeed = (id: number, payload: { amount?: number; amount1?: number; amount2?: number }) =>
   api.post<ManualFeedResponse>(`/feeders/${id}/feed`, payload).then(r => r.data);
+// Device commands run as Temporal workflows. "pending" means the request
+// stopped waiting before the workflow finished; the command is still running.
+export interface DeviceCommandResponse {
+  status: 'ok' | 'pending';
+  workflow_id: string;
+}
+
 export const updateSettings = (id: number, settings: Record<string, unknown>) =>
-  api.post(`/feeders/${id}/settings`, { settings }).then(r => r.data);
-export const resetDesiccant = (id: number) => api.post(`/feeders/${id}/desiccant/reset`).then(r => r.data);
-export const foodReplenished = (id: number) => api.post(`/feeders/${id}/food-replenished`).then(r => r.data);
-// Currently unused in the UI — controls PetKit's built-in device schedule.
-export const removeSchedule = (id: number) => api.post(`/feeders/${id}/schedule/remove`).then(r => r.data);
-export const restoreSchedule = (id: number) => api.post(`/feeders/${id}/schedule/restore`).then(r => r.data);
+  api.post<DeviceCommandResponse>(`/feeders/${id}/settings`, { settings }).then(r => r.data);
+export const resetDesiccant = (id: number) =>
+  api.post<DeviceCommandResponse>(`/feeders/${id}/desiccant/reset`).then(r => r.data);
+export const foodReplenished = (id: number) =>
+  api.post<DeviceCommandResponse>(`/feeders/${id}/food-replenished`).then(r => r.data);
 export const refreshFeeder = (id: number) => api.post<Feeder>(`/feeders/${id}/refresh`).then(r => r.data);
 
 export interface FeedAlert {

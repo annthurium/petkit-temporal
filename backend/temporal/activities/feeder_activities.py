@@ -14,6 +14,8 @@ from backend.config import PETKIT_TIMEZONE
 FEEDER_NOT_FOUND = "FeederNotFound"  # permanent — no point retrying or verifying
 FEED_REJECTED = "FeedRejected"  # PetKit returned an explicit error for the command
 FEED_NOT_YET_RECORDED = "FeedNotYetRecorded"  # verification poll: retry later
+COMMAND_REJECTED = "CommandRejected"  # PetKit returned an explicit error for a device command
+UNKNOWN_COMMAND = "UnknownCommand"  # programming error — never retry
 
 
 @dataclass
@@ -37,23 +39,28 @@ class ManualFeedInput:
     amount2: int | None = None
 
 
+async def _client_with_feeder(device_id: int):
+    """Return the PetKit client, making sure the feeder exists."""
+    client = await get_client()
+    if device_id in get_feeders(client):
+        return client
+
+    # The entities cache may be empty because of a stale session.
+    # Try one refresh before giving up.
+    client = await refresh_data()
+    if device_id not in get_feeders(client):
+        raise ApplicationError(
+            f"Feeder {device_id} not found",
+            type=FEEDER_NOT_FOUND,
+            non_retryable=True,
+        )
+    return client
+
+
 async def _send_feed_command(input: ManualFeedInput) -> None:
     from pypetkitapi.command import FeederCommand
 
-    client = await get_client()
-    feeders = get_feeders(client)
-
-    if input.device_id not in feeders:
-        # The entities cache may be empty because of a stale session.
-        # Try one refresh before giving up.
-        client = await refresh_data()
-        feeders = get_feeders(client)
-        if input.device_id not in feeders:
-            raise ApplicationError(
-                f"Feeder {input.device_id} not found",
-                type=FEEDER_NOT_FOUND,
-                non_retryable=True,
-            )
+    client = await _client_with_feeder(input.device_id)
 
     payload = {}
     if input.amount is not None:
@@ -89,6 +96,62 @@ async def trigger_feed(input: ManualFeedInput) -> dict:
         raise ApplicationError(str(e), type=FEED_REJECTED) from e
 
     return {"status": "ok", "device_id": input.device_id}
+
+
+# Device commands the API can send through DeviceCommandWorkflow, mapped to
+# (pypetkitapi command class name, member name). Resolved lazily so this module
+# doesn't import pypetkitapi.command at load time.
+DEVICE_COMMANDS: dict[str, tuple[str, str]] = {
+    "update_settings": ("DeviceCommand", "UPDATE_SETTING"),
+    "reset_desiccant": ("FeederCommand", "RESET_DESICCANT"),
+    "food_replenished": ("FeederCommand", "FOOD_REPLENISHED"),
+}
+
+
+@dataclass
+class DeviceCommandInput:
+    device_id: int
+    command: str  # a key of DEVICE_COMMANDS
+    payload: dict | None = None
+
+
+def _resolve_command(name: str):
+    import pypetkitapi.command as petkit_command
+
+    try:
+        class_name, member = DEVICE_COMMANDS[name]
+    except KeyError:
+        raise ApplicationError(
+            f"Unknown device command: {name}", type=UNKNOWN_COMMAND, non_retryable=True
+        )
+    return getattr(getattr(petkit_command, class_name), member)
+
+
+async def _send_device_command(input: DeviceCommandInput) -> None:
+    command = _resolve_command(input.command)
+    client = await _client_with_feeder(input.device_id)
+    await client.send_api_request(input.device_id, command, input.payload)
+
+
+@activity.defn
+async def send_device_command(input: DeviceCommandInput) -> dict:
+    """Send a non-feed command (settings, desiccant reset, food replenished).
+
+    Unlike trigger_feed, these commands are idempotent (setting a value or
+    resetting a counter twice has the same effect), so the workflow lets
+    Temporal retry them normally.
+    """
+    try:
+        try:
+            await _send_device_command(input)
+        except PetkitSessionExpiredError:
+            activity.logger.info("PetKit session expired; re-authenticating once")
+            await reset_client()
+            await _send_device_command(input)
+    except PypetkitError as e:
+        raise ApplicationError(str(e), type=COMMAND_REJECTED) from e
+
+    return {"status": "ok", "device_id": input.device_id, "command": input.command}
 
 
 @dataclass

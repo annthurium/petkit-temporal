@@ -14,6 +14,10 @@ from temporalio import workflow
 from temporalio.exceptions import ActivityError, ApplicationError, TimeoutError, TimeoutType
 
 from backend.temporal.activities.feeder_activities import (
+    COMMAND_REJECTED,
+    UNKNOWN_COMMAND,
+    DeviceCommandInput,
+    send_device_command,
     FEED_NOT_YET_RECORDED,
     FEED_REJECTED,
     FEEDER_NOT_FOUND,
@@ -30,6 +34,8 @@ from backend.temporal.activities.feeder_activities import (
     verify_feed,
 )
 from backend.temporal.workflows.feeder_workflows import (
+    DEVICE_COMMAND_RETRY_POLICY,
+    DeviceCommandWorkflow,
     MAX_FEED_ATTEMPTS,
     TRIGGER_RETRY_POLICY,
     VERIFY_RETRY_POLICY,
@@ -494,3 +500,112 @@ class TestFeedWorkflow:
         await _run(FeedInput(device_id=100, amount=5), fake)
         verify_input = fake.calls[1][1]
         assert verify_input.not_before == "2025-01-15T15:00:00+00:00"
+
+
+# ---------------------------------------------------------------------------
+# Activity: send_device_command
+# ---------------------------------------------------------------------------
+
+
+class TestSendDeviceCommandActivity:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "command,expected",
+        [
+            ("update_settings", "update_setting"),
+            ("reset_desiccant", "desiccant_reset"),
+            ("food_replenished", "food_replenished"),
+        ],
+    )
+    async def test_maps_command_to_petkit(self, command, expected):
+        fake_client = AsyncMock()
+        with (
+            patch(f"{ACT}.get_client", return_value=fake_client),
+            patch(f"{ACT}.get_feeders", return_value={100: _make_feeder()}),
+        ):
+            result = await send_device_command(
+                DeviceCommandInput(device_id=100, command=command, payload={"x": 1})
+            )
+        assert result["status"] == "ok"
+        device_id, petkit_command, payload = fake_client.send_api_request.call_args[0]
+        assert device_id == 100
+        assert str(petkit_command) == expected
+        assert payload == {"x": 1}
+
+    @pytest.mark.asyncio
+    async def test_unknown_command_is_non_retryable(self):
+        with pytest.raises(ApplicationError) as exc_info:
+            await send_device_command(DeviceCommandInput(device_id=100, command="self_destruct"))
+        assert exc_info.value.type == UNKNOWN_COMMAND
+        assert exc_info.value.non_retryable is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_feeder_is_non_retryable(self):
+        fake_client = AsyncMock()
+        with (
+            patch(f"{ACT}.get_client", return_value=fake_client),
+            patch(f"{ACT}.get_feeders", return_value={}),
+            patch(f"{ACT}.refresh_data", return_value=fake_client),
+        ):
+            with pytest.raises(ApplicationError) as exc_info:
+                await send_device_command(DeviceCommandInput(device_id=999, command="reset_desiccant"))
+        assert exc_info.value.type == FEEDER_NOT_FOUND
+        fake_client.send_api_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_petkit_error_wrapped_as_retryable_command_rejected(self):
+        from pypetkitapi.exceptions import PypetkitError
+
+        fake_client = AsyncMock()
+        fake_client.send_api_request.side_effect = PypetkitError("Device is offline")
+        with (
+            patch(f"{ACT}.get_client", return_value=fake_client),
+            patch(f"{ACT}.get_feeders", return_value={100: _make_feeder()}),
+        ):
+            with pytest.raises(ApplicationError) as exc_info:
+                await send_device_command(DeviceCommandInput(device_id=100, command="reset_desiccant"))
+        assert exc_info.value.type == COMMAND_REJECTED
+        assert exc_info.value.non_retryable is False
+
+    @pytest.mark.asyncio
+    async def test_expired_session_reauthenticates_and_resends_once(self):
+        from pypetkitapi.exceptions import PetkitSessionExpiredError
+
+        fake_client = AsyncMock()
+        fake_client.send_api_request.side_effect = [PetkitSessionExpiredError("expired"), None]
+        with (
+            patch(f"{ACT}.get_client", return_value=fake_client),
+            patch(f"{ACT}.get_feeders", return_value={100: _make_feeder()}),
+            patch(f"{ACT}.reset_client", new_callable=AsyncMock) as mock_reset,
+        ):
+            await send_device_command(DeviceCommandInput(device_id=100, command="food_replenished"))
+        mock_reset.assert_awaited_once()
+        assert fake_client.send_api_request.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# DeviceCommandWorkflow
+# ---------------------------------------------------------------------------
+
+
+class TestDeviceCommandWorkflow:
+    @pytest.mark.asyncio
+    async def test_runs_activity_with_retrying_policy(self):
+        fake = _FakeActivities(send_device_command=[{"status": "ok"}])
+        inp = DeviceCommandInput(device_id=100, command="update_settings", payload={"volume": 3})
+
+        async def execute_activity(fn, arg, **kwargs):
+            return await fake(fn, arg, **kwargs)
+
+        with patch.object(workflow, "execute_activity", side_effect=execute_activity):
+            result = await DeviceCommandWorkflow().run(inp)
+
+        assert result.status == "ok"
+        assert result.command == "update_settings"
+        assert fake.calls[0][1] is inp
+        assert fake.calls[0][2]["retry_policy"] is DEVICE_COMMAND_RETRY_POLICY
+
+    def test_policy_never_retries_permanent_errors(self):
+        assert DEVICE_COMMAND_RETRY_POLICY.maximum_attempts > 1
+        assert FEEDER_NOT_FOUND in DEVICE_COMMAND_RETRY_POLICY.non_retryable_error_types
+        assert UNKNOWN_COMMAND in DEVICE_COMMAND_RETRY_POLICY.non_retryable_error_types

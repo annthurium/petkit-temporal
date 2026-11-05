@@ -80,6 +80,9 @@ The Temporal web UI is available at `http://localhost:8233` for inspecting workf
   4. if it isn't confirmed, send the command once more and verify again
   5. if it's still unconfirmed, raise an alert
 - **Manual feeds** use a fixed workflow ID per device, so a double-click can't start two feeds at once.
+- **Device commands** (settings, desiccant reset, food replenished) run as a `DeviceCommandWorkflow` with normal retries. The API waits up to 25s for the result.
+
+Design decisions are recorded in [docs/adr/](docs/adr/).
 
 ### Migrating from the old long-running workflow
 

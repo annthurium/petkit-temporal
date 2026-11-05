@@ -26,9 +26,14 @@ Cloud Run services, and two clients would keep logging each other out.
 - **Only Temporal activities call PetKit.** `backend/client.py` is imported only
   by activities. The API talks only to Temporal (and later Firestore).
 - **Order of work:**
-  - **Step 2: writes.** Each write becomes a small workflow (or one shared
-    "device command" workflow) that runs an activity. The API starts it and
-    returns.
+  - **Step 2: writes.** All three writes go through one `DeviceCommandWorkflow`
+    that runs a `send_device_command` activity. These commands are idempotent,
+    so unlike feeds they retry normally (3 attempts). Until step 3, **the API
+    waits for the workflow result** (up to 25 s), because the UI refreshes the
+    feeder right after a write and would otherwise show stale settings and
+    report success before anything happened. Outcomes: 200 when done, 502 with
+    PetKit's message on failure, 202 `pending` if the wait runs out (the
+    workflow keeps running).
   - **Step 3: reads.** Activities write device snapshots (state, settings, feed
     history, last result) to Firestore after each action and on refresh. The
     frontend reads Firestore live. Then the API's last PetKit calls, including
@@ -54,5 +59,7 @@ Cloud Run services, and two clients would keep logging each other out.
 - Between steps 2 and 3, the API still reads from PetKit directly. That's fine
   locally, where the API and worker share a process, but the app isn't ready to
   split into two services until step 3 is done.
-- Writes become asynchronous: the API returns once the workflow starts, and the
-  UI learns the outcome later (from Firestore, after step 3).
+- Writes are synchronous for now (the API waits up to 25 s per request). In
+  step 3 they should become asynchronous: the API returns once the workflow
+  starts, and the UI learns the outcome from Firestore. Waiting on a request
+  would also hold a Cloud Run request open through a worker cold start.

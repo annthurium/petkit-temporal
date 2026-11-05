@@ -1,16 +1,25 @@
+import asyncio
 import logging
+import uuid
+from datetime import timedelta
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from pypetkitapi.command import DeviceCommand, FeederCommand
+from temporalio.client import WorkflowFailureError
 from temporalio.common import WorkflowIDConflictPolicy
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from backend.client import get_client, refresh_data, get_feeders, fetch_d4_feed_events
 from backend.config import TEMPORAL_TASK_QUEUE
 from backend.temporal import schedules
+from backend.temporal.activities.feeder_activities import DeviceCommandInput
 from backend.temporal.client import get_temporal_client
-from backend.temporal.workflows.feeder_workflows import FeedInput, FeedWorkflow
+from backend.temporal.workflows.feeder_workflows import (
+    DeviceCommandWorkflow,
+    FeedInput,
+    FeedWorkflow,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -197,34 +206,62 @@ class UpdateSettingsRequest(BaseModel):
     settings: dict
 
 
+# How long a device-command request waits for its workflow before answering
+# 202 "pending". The workflow keeps running either way.
+DEVICE_COMMAND_WAIT = timedelta(seconds=25)
+DEVICE_COMMAND_WORKFLOW_TIMEOUT = timedelta(minutes=5)
+
+
+def _root_cause_message(err: BaseException) -> str:
+    """Return the innermost failure message (WorkflowFailure -> Activity -> Application)."""
+    while getattr(err, "cause", None) is not None:
+        err = err.cause
+    return getattr(err, "message", None) or str(err)
+
+
+async def _run_device_command(device_id: int, command: str, payload: dict | None = None):
+    """Run a DeviceCommandWorkflow and wait for its result.
+
+    Until Firestore exists (step 3), the UI refreshes right after a write, so
+    we wait for the outcome instead of returning as soon as the workflow
+    starts. See ADR 0006.
+    """
+    await _require_feeder(device_id)
+    temporal_client = await get_temporal_client()
+    handle = await temporal_client.start_workflow(
+        DeviceCommandWorkflow.run,
+        DeviceCommandInput(device_id=device_id, command=command, payload=payload),
+        id=f"device-command-{device_id}-{command}-{uuid.uuid4().hex[:8]}",
+        task_queue=TEMPORAL_TASK_QUEUE,
+        execution_timeout=DEVICE_COMMAND_WORKFLOW_TIMEOUT,
+        static_summary=f"Device command: {command}",
+    )
+    try:
+        await asyncio.wait_for(handle.result(), timeout=DEVICE_COMMAND_WAIT.total_seconds())
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            status_code=202, content={"status": "pending", "workflow_id": handle.id}
+        )
+    except WorkflowFailureError as e:
+        message = _root_cause_message(e)
+        logger.warning("Device command %s failed for %s: %s", command, device_id, message)
+        raise HTTPException(502, message)
+    return {"status": "ok", "workflow_id": handle.id}
+
+
 @router.post("/{device_id}/settings")
 async def update_settings(device_id: int, req: UpdateSettingsRequest):
-    client = await get_client()
-    feeders = get_feeders(client)
-    if device_id not in feeders:
-        raise HTTPException(404, "Feeder not found")
-    await client.send_api_request(device_id, DeviceCommand.UPDATE_SETTING, req.settings)
-    return {"status": "ok"}
+    return await _run_device_command(device_id, "update_settings", req.settings)
 
 
 @router.post("/{device_id}/desiccant/reset")
 async def reset_desiccant(device_id: int):
-    client = await get_client()
-    feeders = get_feeders(client)
-    if device_id not in feeders:
-        raise HTTPException(404, "Feeder not found")
-    await client.send_api_request(device_id, FeederCommand.RESET_DESICCANT, None)
-    return {"status": "ok"}
+    return await _run_device_command(device_id, "reset_desiccant")
 
 
 @router.post("/{device_id}/food-replenished")
 async def food_replenished(device_id: int):
-    client = await get_client()
-    feeders = get_feeders(client)
-    if device_id not in feeders:
-        raise HTTPException(404, "Feeder not found")
-    await client.send_api_request(device_id, FeederCommand.FOOD_REPLENISHED, None)
-    return {"status": "ok"}
+    return await _run_device_command(device_id, "food_replenished")
 
 
 @router.post("/{device_id}/refresh")
