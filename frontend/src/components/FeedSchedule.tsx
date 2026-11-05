@@ -53,7 +53,7 @@ export default function FeedSchedulePanel({ feederId, onDone }: Props) {
         consecutiveFailures = 0;
         if (s) {
           setTime(s.time);
-          setAmount(s.amount);
+          if (s.amount !== null) setAmount(s.amount);
         }
       } catch {
         if (!isMounted) return;
@@ -82,14 +82,9 @@ export default function FeedSchedulePanel({ feederId, onDone }: Props) {
     setFeedLoading(true);
     setFeedMessage(null);
     try {
-      const result = await manualFeed(feederId, { amount: feedAmount });
-      if (result.via === 'workflow') {
-        setFeedMessageTone('info');
-        setFeedMessage('Feed request sent. Waiting for device confirmation.');
-      } else {
-        setFeedMessageTone('success');
-        setFeedMessage(`Fed ${feedAmount}g successfully`);
-      }
+      await manualFeed(feederId, { amount: feedAmount });
+      setFeedMessageTone('info');
+      setFeedMessage('Feed request sent. Waiting for device confirmation.');
       onDone();
     } catch (error: unknown) {
       setFeedMessageTone('error');
@@ -145,9 +140,16 @@ export default function FeedSchedulePanel({ feederId, onDone }: Props) {
           <p className="text-lg font-semibold text-neon-cyan text-glow-cyan">
             {schedule.amount}g daily at {schedule.time}
           </p>
-          {schedule.skip_next && (
-            <p className="text-sm text-neon-pink">Next feeding will be skipped (manual feed detected)</p>
+          {schedule.paused ? (
+            <p className="text-sm text-neon-pink">Schedule is paused</p>
+          ) : schedule.next_run && (
+            <p className="text-sm text-vapor-muted">
+              Next feeding: {new Date(schedule.next_run).toLocaleString()}
+            </p>
           )}
+          <p className="text-xs text-vapor-muted">
+            Skipped automatically if the feeder dispensed food in the previous {schedule.skip_window_hours}h.
+          </p>
           {schedule.last_feed_result && (
             <div
               className={`mt-3 p-3 rounded-lg space-y-1 border ${
@@ -172,7 +174,7 @@ export default function FeedSchedulePanel({ feederId, onDone }: Props) {
                     ? 'Success'
                     : schedule.last_feed_result.status === 'failure'
                       ? 'Failed'
-                      : 'Unconfirmed'
+                      : 'Skipped'
                 }
               </p>
               <p

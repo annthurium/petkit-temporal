@@ -1,4 +1,3 @@
-import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -8,42 +7,13 @@ from temporalio.exceptions import ApplicationError
 from pypetkitapi.exceptions import PetkitSessionExpiredError, PypetkitError
 
 from backend.client import get_client, get_feeders, refresh_data, reset_client
+from backend import config
 from backend.config import PETKIT_TIMEZONE
 
-# ---------------------------------------------------------------------------
-# Idempotency cache for trigger_feed
-# ---------------------------------------------------------------------------
-# Temporal retries an activity when it times out or the worker crashes after
-# the API call succeeds but before the result is recorded.  For trigger_feed
-# this would dispense food twice.  We cache successful results keyed by the
-# activity's stable identity (workflow_id + run_id + activity_id), which
-# stays the same across retry attempts.  A 5-minute TTL covers the worst-
-# case retry window (3 attempts × 30s timeout + backoff ≈ 66s).
-
-_DEDUP_TTL_SECONDS = 300
-
-_feed_dedup_cache: dict[str, tuple[dict, float]] = {}
-
-
-def _dedup_check(key: str) -> dict | None:
-    """Return cached result if *key* exists and hasn't expired."""
-    entry = _feed_dedup_cache.get(key)
-    if entry is None:
-        return None
-    result, expiry = entry
-    if time.monotonic() > expiry:
-        del _feed_dedup_cache[key]
-        return None
-    return result
-
-
-def _dedup_record(key: str, result: dict) -> None:
-    """Store *result* under *key* with a TTL, evicting stale entries."""
-    now = time.monotonic()
-    expired = [k for k, (_, exp) in _feed_dedup_cache.items() if now > exp]
-    for k in expired:
-        del _feed_dedup_cache[k]
-    _feed_dedup_cache[key] = (result, now + _DEDUP_TTL_SECONDS)
+# ApplicationError types the workflow inspects to decide what to do next.
+FEEDER_NOT_FOUND = "FeederNotFound"  # permanent — no point retrying or verifying
+FEED_REJECTED = "FeedRejected"  # PetKit returned an explicit error for the command
+FEED_NOT_YET_RECORDED = "FeedNotYetRecorded"  # verification poll: retry later
 
 
 @dataclass
@@ -67,56 +37,23 @@ class ManualFeedInput:
     amount2: int | None = None
 
 
-@activity.defn
-async def trigger_feed(input: ManualFeedInput) -> dict:
-    """Trigger a feeding on a feeder device.
-
-    Uses an in-process idempotency cache keyed by activity identity to
-    prevent duplicate feeds when Temporal retries after a timeout where
-    the API call actually succeeded.
-    """
-    # Build a dedup key from the activity's stable identity.  activity.info()
-    # raises RuntimeError outside a real activity context (e.g. in unit tests);
-    # in that case we skip the dedup check entirely.
-    dedup_key: str | None = None
-    try:
-        info = activity.info()
-        dedup_key = f"{info.workflow_id}-{info.workflow_run_id}-{info.activity_id}"
-    except RuntimeError:
-        pass
-
-    if dedup_key is not None:
-        cached = _dedup_check(dedup_key)
-        if cached is not None:
-            activity.logger.info(
-                "Skipping duplicate feed for device %s (retry of activity %s, attempt %s)",
-                input.device_id,
-                info.activity_id,
-                info.attempt,
-            )
-            return cached
-
+async def _send_feed_command(input: ManualFeedInput) -> None:
     from pypetkitapi.command import FeederCommand
 
-    try:
-        client = await get_client()
-    except PetkitSessionExpiredError:
-        await reset_client()
-        raise  # retryable — next attempt gets a fresh session
-
+    client = await get_client()
     feeders = get_feeders(client)
 
     if input.device_id not in feeders:
         # The entities cache may be empty because of a stale session.
         # Try one refresh before giving up.
-        try:
-            client = await refresh_data()
-        except PetkitSessionExpiredError:
-            await reset_client()
-            raise  # retryable — fresh session on next attempt
+        client = await refresh_data()
         feeders = get_feeders(client)
         if input.device_id not in feeders:
-            raise ApplicationError(f"Feeder {input.device_id} not found", non_retryable=True)
+            raise ApplicationError(
+                f"Feeder {input.device_id} not found",
+                type=FEEDER_NOT_FOUND,
+                non_retryable=True,
+            )
 
     payload = {}
     if input.amount is not None:
@@ -126,32 +63,44 @@ async def trigger_feed(input: ManualFeedInput) -> dict:
     if input.amount2 is not None:
         payload["amount2"] = input.amount2
 
-    try:
-        await client.send_api_request(input.device_id, FeederCommand.MANUAL_FEED, payload)
-    except PetkitSessionExpiredError:
-        await reset_client()
-        raise  # retryable — fresh session on next attempt
-    except PypetkitError as e:
-        raise ApplicationError(str(e)) from e
+    await client.send_api_request(input.device_id, FeederCommand.MANUAL_FEED, payload)
 
-    result = {"status": "ok", "device_id": input.device_id}
-    if dedup_key is not None:
-        _dedup_record(dedup_key, result)
-    return result
+
+@activity.defn
+async def trigger_feed(input: ManualFeedInput) -> dict:
+    """Send a feed command to the device.
+
+    This activity is NOT idempotent: if it times out after PetKit accepted the
+    command, running it again dispenses food twice. So the workflow runs it
+    with maximum_attempts=1 and decides whether to try again only after
+    verify_feed checks the device's feed log.
+
+    An expired PetKit session is the one failure we retry here. PetKit rejected
+    the request before acting on it, so sending it again is safe.
+    """
+    try:
+        try:
+            await _send_feed_command(input)
+        except PetkitSessionExpiredError:
+            activity.logger.info("PetKit session expired; re-authenticating once")
+            await reset_client()
+            await _send_feed_command(input)
+    except PypetkitError as e:
+        raise ApplicationError(str(e), type=FEED_REJECTED) from e
+
+    return {"status": "ok", "device_id": input.device_id}
 
 
 @dataclass
 class VerifyFeedInput:
     device_id: int
-    is_manual: bool = False
-    not_before: str | None = None # isoformat time string 
+    not_before: str | None = None  # isoformat time string
 
 
 @dataclass
 class VerifyFeedResult:
-    outcome: str  # "verified" | "failed"
     device_id: int
-    error_msg: str | None = None
+    feed_at: str | None = None  # isoformat UTC timestamp of the matching feed event
 
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:
@@ -204,6 +153,95 @@ async def _latest_d4_feed_timestamp(client, device_id: int) -> datetime | None:
     return candidate_local.astimezone(timezone.utc)
 
 
+async def _refreshed_client_with_feeder(device_id: int):
+    """Refresh device data and make sure the feeder exists.
+
+    Session expiry resets the client and re-raises, so the activity's retry
+    policy gets a fresh session on the next attempt.
+    """
+    try:
+        client = await refresh_data()
+    except PetkitSessionExpiredError:
+        await reset_client()
+        raise
+
+    if device_id not in get_feeders(client):
+        raise ApplicationError(
+            f"Feeder {device_id} not found",
+            type=FEEDER_NOT_FOUND,
+            non_retryable=True,
+        )
+    return client
+
+
+@activity.defn
+async def verify_feed(input: VerifyFeedInput) -> VerifyFeedResult:
+    """Check the device's feed log for a feed event at or after not_before.
+
+    PetKit has no webhooks, so we have to poll. Each call checks once: if
+    there's no matching event yet, it raises a retryable FeedNotYetRecorded
+    error and the workflow's retry policy decides how often and how long to
+    keep checking. When retries run out, the workflow treats the feed as
+    unconfirmed.
+    """
+    client = await _refreshed_client_with_feeder(input.device_id)
+
+    not_before = _parse_iso_datetime(input.not_before)
+    latest_event = await _latest_d4_feed_timestamp(client, input.device_id)
+
+    if _is_after_threshold(latest_event, not_before):
+        return VerifyFeedResult(
+            device_id=input.device_id,
+            feed_at=latest_event.isoformat() if latest_event else None,
+        )
+
+    raise ApplicationError(
+        "Feed not yet recorded by device",
+        type=FEED_NOT_YET_RECORDED,
+    )
+
+
+@dataclass
+class RecentFeedCheckInput:
+    device_id: int
+
+
+@dataclass
+class RecentFeedCheck:
+    fed_recently: bool
+    last_feed_at: str | None = None  # isoformat UTC
+    window_hours: float = 0.0  # the FEED_SKIP_WINDOW_HOURS value used
+
+
+@activity.defn
+async def check_recent_feed(input: RecentFeedCheckInput) -> RecentFeedCheck:
+    """Report whether the feeder dispensed food within FEED_SKIP_WINDOW_HOURS.
+
+    Scheduled feeds use this to skip themselves after a recent manual feed, or
+    after a feed from the PetKit app or the button on the device. It reads the
+    device's own feed log, so no workflow has to remember earlier feeds.
+
+    The window is read from config on every run (activities may read config;
+    workflows may not), so changing it only takes a worker restart. Existing
+    schedules don't need to be re-saved. 0 or less disables skipping.
+    """
+    window_hours = config.FEED_SKIP_WINDOW_HOURS
+    if window_hours <= 0:
+        return RecentFeedCheck(fed_recently=False, window_hours=window_hours)
+
+    client = await _refreshed_client_with_feeder(input.device_id)
+    latest_event = await _latest_d4_feed_timestamp(client, input.device_id)
+    if latest_event is None:
+        return RecentFeedCheck(fed_recently=False, window_hours=window_hours)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+    return RecentFeedCheck(
+        fed_recently=latest_event >= cutoff,
+        last_feed_at=latest_event.isoformat(),
+        window_hours=window_hours,
+    )
+
+
 @dataclass
 class FeedAlertInput:
     device_id: int
@@ -218,50 +256,13 @@ class FeedAlert:
 
 
 @activity.defn
-async def verify_feed(input: VerifyFeedInput) -> VerifyFeedResult:
-    """Verify that a feed command was actually executed by the device.
-
-    Refreshes device data from the PetKit cloud API and checks D4 feed
-    statistics records for a recent feed event after not_before.
-    """
-    try:
-        client = await refresh_data()
-    except PetkitSessionExpiredError:
-        await reset_client()
-        raise  # retryable — fresh session on next attempt
-
-    feeders = get_feeders(client)
-
-    if input.device_id not in feeders:
-        return VerifyFeedResult(
-            outcome="failed",
-            device_id=input.device_id,
-            error_msg="Feeder not found during verification",
-        )
-
-    not_before = _parse_iso_datetime(input.not_before)
-    latest_event = await _latest_d4_feed_timestamp(client, input.device_id)
-
-    if _is_after_threshold(latest_event, not_before):
-        return VerifyFeedResult(outcome="verified", device_id=input.device_id)
-
-    return VerifyFeedResult(
-        outcome="failed",
-        device_id=input.device_id,
-        error_msg="Most recent feed could not be verified",
-    )
-
-
-@activity.defn
 async def alert_feed_failure(input: FeedAlertInput) -> FeedAlert:
-    """Compensation step: create an alert when feed verification fails.
+    """Compensation step: create an alert when a feed can't be confirmed.
 
     In a production system, this could send a push notification, email,
-    or SMS. Here it logs the failure and returns alert data that the
-    workflow stores as queryable state for the frontend.
+    or SMS. Here it logs the failure and returns alert data that ends up
+    in the workflow result for the frontend.
     """
-    from datetime import datetime, timezone
-
     activity.logger.warning(
         "FEED ALERT: Device %s - %s", input.device_id, input.reason
     )

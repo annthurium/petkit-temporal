@@ -71,7 +71,8 @@ export const fetchRecords = (id: number) => api.get<FeederRecords>(`/feeders/${i
 
 export interface ManualFeedResponse {
   status: string;
-  via: 'workflow' | 'direct';
+  via: 'workflow';
+  workflow_id: string;
 }
 
 export const manualFeed = (id: number, payload: { amount?: number; amount1?: number; amount2?: number }) =>
@@ -92,16 +93,20 @@ export interface FeedAlert {
 }
 
 export interface FeedResult {
-  status: 'success' | 'failure' | 'unknown';
+  status: 'success' | 'failure' | 'skipped';
   feed_type: 'scheduled' | 'manual';
   message: string;
   timestamp: string;
+  attempts: number;
 }
 
 export interface FeedSchedule {
   time: string;
-  amount: number;
-  skip_next: boolean;
+  amount: number | null;
+  timezone: string | null;
+  next_run: string | null;
+  paused: boolean;
+  skip_window_hours: number;
   last_alert: FeedAlert | null;
   last_feed_result: FeedResult | null;
 }

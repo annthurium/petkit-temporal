@@ -33,6 +33,8 @@ PETKIT_TIMEZONE="America/Los_Angeles"
 TEMPORAL_HOST="localhost:7233"
 TEMPORAL_NAMESPACE="default"
 TEMPORAL_TASK_QUEUE="petkit-tasks"
+# Optional: skip a scheduled feed if the feeder dispensed food within this many hours
+FEED_SKIP_WINDOW_HOURS="12"
 ```
 
 ### Install dependencies
@@ -66,7 +68,27 @@ The backend automatically starts a Temporal worker as a background task when the
 uv run python -m backend.temporal.worker
 ```
 
-The Temporal web UI is available at `http://localhost:8233` for inspecting workflows.
+The Temporal web UI is available at `http://localhost:8233` for inspecting workflows and schedules.
+
+## How feeding works
+
+- **Daily schedules** are [Temporal Schedules](https://docs.temporal.io/schedule) (`feeding-schedule-{device_id}`). Temporal handles the timezone and DST.
+- **Each feed**, scheduled or manual, is a short-lived `FeedWorkflow`:
+  1. *(scheduled only)* skip if the feeder dispensed food in the last `FEED_SKIP_WINDOW_HOURS`
+  2. send the feed command (never retried automatically, since a retry could dispense twice)
+  3. poll the device's feed log until the feed shows up (Temporal activity retries do the polling)
+  4. if it isn't confirmed, send the command once more and verify again
+  5. if it's still unconfirmed, raise an alert
+- **Manual feeds** use a fixed workflow ID per device, so a double-click can't start two feeds at once.
+
+### Migrating from the old long-running workflow
+
+Earlier versions used a long-running `DailyScheduledFeedingWorkflow` per feeder. To convert any that are still running into Schedules:
+
+```bash
+uv run python -m backend.temporal.migrate_to_schedules          # dry run
+uv run python -m backend.temporal.migrate_to_schedules --apply
+```
 
 The frontend runs at `http://localhost:5173` and proxies API requests to the backend at `http://localhost:8000`.
 
@@ -87,11 +109,13 @@ backend/
     feeders.py       # All /api/feeders endpoints
   temporal/
     client.py        # Temporal client singleton
-    worker.py        # Standalone worker entrypoint
+    worker.py        # Worker factory + standalone worker entrypoint
+    schedules.py     # Temporal Schedule CRUD + latest feed result lookup
+    migrate_to_schedules.py  # One-time migration from the old long-running workflow
     workflows/
-      feeder_workflows.py  # DailyScheduledFeedingWorkflow
+      feeder_workflows.py  # FeedWorkflow
     activities/
-      feeder_activities.py # trigger_feed
+      feeder_activities.py # trigger_feed, verify_feed, check_recent_feed, alert_feed_failure
 frontend/
   src/
     App.tsx          # Root component
@@ -99,5 +123,6 @@ frontend/
     components/      # React components (dashboard, feed controls, etc.)
 tests/
   test_workflows.py  # Activity and workflow unit tests
+  test_schedules.py  # Schedule helper tests
   test_router.py     # Router/endpoint integration tests
 ```

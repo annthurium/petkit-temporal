@@ -10,16 +10,28 @@ workflow and activity tasks from the Temporal server.
 
 import asyncio
 
+from temporalio.client import Client
 from temporalio.worker import Worker
 
 from backend.config import TEMPORAL_HOST, TEMPORAL_TASK_QUEUE
 from backend.temporal.client import get_temporal_client
 from backend.temporal.activities.feeder_activities import (
     alert_feed_failure,
+    check_recent_feed,
     trigger_feed,
     verify_feed,
 )
-from backend.temporal.workflows.feeder_workflows import DailyScheduledFeedingWorkflow
+from backend.temporal.workflows.feeder_workflows import FeedWorkflow
+
+
+def build_worker(client: Client) -> Worker:
+    """Create the worker with every workflow and activity this app uses."""
+    return Worker(
+        client,
+        task_queue=TEMPORAL_TASK_QUEUE,
+        workflows=[FeedWorkflow],
+        activities=[trigger_feed, verify_feed, check_recent_feed, alert_feed_failure],
+    )
 
 
 async def run_worker() -> None:
@@ -28,12 +40,7 @@ async def run_worker() -> None:
     client = await get_temporal_client()
 
     print(f"Starting worker on task queue: {TEMPORAL_TASK_QUEUE}")
-    worker = Worker(
-        client,
-        task_queue=TEMPORAL_TASK_QUEUE,
-        workflows=[DailyScheduledFeedingWorkflow],
-        activities=[trigger_feed, verify_feed, alert_feed_failure],
-    )
+    worker = build_worker(client)
 
     print("Worker started. Press Ctrl+C to stop.")
     await worker.run()

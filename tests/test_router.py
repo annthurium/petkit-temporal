@@ -4,8 +4,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from temporalio.client import WorkflowExecutionStatus
-from temporalio.service import RPCError
 
 from backend.main import app
 
@@ -81,11 +79,6 @@ def _mock_get_feeders(_client):
     return FAKE_FEEDERS
 
 
-def _make_rpc_error(message="not found"):
-    """Create a mock RPCError for testing."""
-    return RPCError(MagicMock(), MagicMock(), message)
-
-
 @pytest.fixture
 def fake_client():
     client = AsyncMock()
@@ -95,19 +88,13 @@ def fake_client():
 
 @pytest.fixture
 def mock_temporal_client():
-    """Create a mock Temporal client for testing.
-
-    By default, workflow handle operations raise RPCError (no workflow running).
-    get_workflow_handle is sync in the real SDK, so we use MagicMock for it.
-    """
+    """Mock Temporal client. start_workflow returns a handle with the requested ID."""
     tc = MagicMock()
-    handle = MagicMock()
-    handle.signal = AsyncMock(side_effect=_make_rpc_error())
-    handle.query = AsyncMock(side_effect=_make_rpc_error())
-    handle.describe = AsyncMock(side_effect=_make_rpc_error())
-    handle.cancel = AsyncMock(side_effect=_make_rpc_error())
-    tc.get_workflow_handle.return_value = handle
-    tc.start_workflow = AsyncMock()
+
+    async def start_workflow(*args, **kwargs):
+        return SimpleNamespace(id=kwargs["id"])
+
+    tc.start_workflow = AsyncMock(side_effect=start_workflow)
     return tc
 
 
@@ -165,23 +152,33 @@ class TestGetFeeder:
 
 class TestManualFeed:
     @pytest.mark.asyncio
-    async def test_409_when_no_workflow_running(self, client):
-        """Returns 409 when no feeding schedule workflow is running."""
-        resp = await client.post("/api/feeders/1/feed", json={"amount": 5})
-        assert resp.status_code == 409
-
-    @pytest.mark.asyncio
-    async def test_dispatches_feed_via_workflow(self, client, mock_temporal_client):
-        """Signals workflow when one is running."""
-        handle = mock_temporal_client.get_workflow_handle.return_value
-        handle.signal = AsyncMock()  # No error = workflow is running
+    async def test_starts_feed_workflow(self, client, mock_temporal_client):
+        """Manual feeds start a FeedWorkflow, whether or not a schedule exists."""
+        from temporalio.common import WorkflowIDConflictPolicy
 
         resp = await client.post("/api/feeders/1/feed", json={"amount": 5})
         assert resp.status_code == 200
         body = resp.json()
-        assert body["status"] == "ok"
-        assert body["via"] == "workflow"
-        handle.signal.assert_awaited_once()
+        assert body == {"status": "ok", "via": "workflow", "workflow_id": "feed-1-manual"}
+
+        mock_temporal_client.start_workflow.assert_awaited_once()
+        args, kwargs = mock_temporal_client.start_workflow.call_args
+        feed_input = args[1]
+        assert feed_input.device_id == 1
+        assert feed_input.amount == 5
+        assert feed_input.feed_type == "manual"
+        assert kwargs["id"] == "feed-1-manual"
+        assert kwargs["id_conflict_policy"] == WorkflowIDConflictPolicy.FAIL
+
+    @pytest.mark.asyncio
+    async def test_409_when_feed_already_running(self, client, mock_temporal_client):
+        from temporalio.exceptions import WorkflowAlreadyStartedError
+
+        mock_temporal_client.start_workflow.side_effect = WorkflowAlreadyStartedError(
+            "feed-1-manual", "FeedWorkflow"
+        )
+        resp = await client.post("/api/feeders/1/feed", json={"amount": 5})
+        assert resp.status_code == 409
 
     @pytest.mark.asyncio
     async def test_400_when_no_amount(self, client):
@@ -198,46 +195,89 @@ class TestManualFeed:
 # Schedule CRUD: GET / PUT / DELETE /api/feeders/{device_id}/schedule
 # ---------------------------------------------------------------------------
 
+SCHEDULE = {
+    "time": "09:00",
+    "amount": 20,
+    "timezone": "America/Los_Angeles",
+    "next_run": "2025-01-16T17:00:00+00:00",
+    "paused": False,
+    "skip_window_hours": 12.0,
+}
+
+
+@pytest.fixture
+def mock_schedules():
+    with (
+        patch("backend.temporal.schedules.describe_schedule", new_callable=AsyncMock, return_value=None) as describe,
+        patch("backend.temporal.schedules.upsert_schedule", new_callable=AsyncMock) as upsert,
+        patch("backend.temporal.schedules.delete_schedule", new_callable=AsyncMock) as delete,
+        patch("backend.temporal.schedules.latest_feed_result", new_callable=AsyncMock, return_value=None) as latest,
+    ):
+        yield SimpleNamespace(describe=describe, upsert=upsert, delete=delete, latest=latest)
+
+
 class TestScheduleCRUD:
     @pytest.mark.asyncio
-    async def test_get_schedule_returns_none_when_no_workflow(self, client):
+    async def test_get_returns_none_without_schedule(self, client, mock_schedules):
         resp = await client.get("/api/feeders/1/schedule")
         assert resp.status_code == 200
         assert resp.json() is None
 
     @pytest.mark.asyncio
-    async def test_put_creates_schedule(self, client, mock_temporal_client):
-        resp = await client.put("/api/feeders/1/schedule", json={"time": "09:00", "amount": 20})
-        assert resp.status_code == 200
+    async def test_get_includes_latest_result_and_alert(self, client, mock_schedules):
+        mock_schedules.describe.return_value = SCHEDULE
+        mock_schedules.latest.return_value = {
+            "status": "failure",
+            "feed_type": "scheduled",
+            "message": "Device is offline",
+            "timestamp": "2025-01-15T17:01:00+00:00",
+            "attempts": 2,
+        }
+        resp = await client.get("/api/feeders/1/schedule")
         body = resp.json()
         assert body["time"] == "09:00"
-        assert body["amount"] == 20
-        assert body["skip_next"] is False
-        assert body["workflow_id"] == "scheduled-feeding-1"
-        mock_temporal_client.start_workflow.assert_awaited_once()
+        assert body["next_run"] == SCHEDULE["next_run"]
+        assert body["last_feed_result"]["status"] == "failure"
+        assert body["last_alert"] == {
+            "device_id": 1,
+            "reason": "Device is offline",
+            "timestamp": "2025-01-15T17:01:00+00:00",
+        }
 
     @pytest.mark.asyncio
-    async def test_put_terminates_existing_workflow(self, client, mock_temporal_client):
-        """When a workflow is already running, terminate it before starting a new one."""
-        handle = mock_temporal_client.get_workflow_handle.return_value
-        desc = MagicMock()
-        desc.status = WorkflowExecutionStatus.RUNNING
-        handle.describe = AsyncMock(return_value=desc)
-        handle.terminate = AsyncMock()
+    async def test_successful_result_has_no_alert(self, client, mock_schedules):
+        mock_schedules.describe.return_value = SCHEDULE
+        mock_schedules.latest.return_value = {
+            "status": "success", "feed_type": "manual", "message": "ok",
+            "timestamp": "2025-01-15T17:01:00+00:00", "attempts": 1,
+        }
+        body = (await client.get("/api/feeders/1/schedule")).json()
+        assert body["last_alert"] is None
 
-        resp = await client.put("/api/feeders/1/schedule", json={"time": "08:00", "amount": 15})
+    @pytest.mark.asyncio
+    async def test_put_upserts_schedule(self, client, mock_schedules, mock_temporal_client):
+        mock_schedules.describe.return_value = SCHEDULE
+        resp = await client.put("/api/feeders/1/schedule", json={"time": "09:00", "amount": 20})
         assert resp.status_code == 200
-        handle.terminate.assert_awaited_once()
-        mock_temporal_client.start_workflow.assert_awaited_once()
+        assert resp.json()["time"] == "09:00"
+        mock_schedules.upsert.assert_awaited_once_with(mock_temporal_client, 1, 9, 0, 20)
 
     @pytest.mark.asyncio
-    async def test_delete_schedule(self, client):
+    @pytest.mark.parametrize("time", ["9:00", "24:00", "12:60", "noon"])
+    async def test_put_rejects_bad_time(self, client, mock_schedules, time):
+        resp = await client.put("/api/feeders/1/schedule", json={"time": time, "amount": 20})
+        assert resp.status_code == 422
+        mock_schedules.upsert.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_schedule(self, client, mock_schedules, mock_temporal_client):
         resp = await client.delete("/api/feeders/1/schedule")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
+        mock_schedules.delete.assert_awaited_once_with(mock_temporal_client, 1)
 
     @pytest.mark.asyncio
-    async def test_schedule_404_for_unknown_device(self, client):
+    async def test_schedule_404_for_unknown_device(self, client, mock_schedules):
         resp = await client.get("/api/feeders/999/schedule")
         assert resp.status_code == 404
 

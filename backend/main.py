@@ -4,18 +4,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from temporalio.worker import Worker
-
 from backend.client import shutdown
 from backend.config import TEMPORAL_HOST, TEMPORAL_TASK_QUEUE
 from backend.routers.feeders import router as feeders_router
 from backend.temporal.client import get_temporal_client
-from backend.temporal.activities.feeder_activities import (
-    alert_feed_failure,
-    trigger_feed,
-    verify_feed,
-)
-from backend.temporal.workflows.feeder_workflows import DailyScheduledFeedingWorkflow
+from backend.temporal.worker import build_worker
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +22,7 @@ async def run_temporal_worker_with_retry(shutdown_event: asyncio.Event) -> None:
             logger.info("Connecting to Temporal at %s...", TEMPORAL_HOST)
             client = await get_temporal_client()
 
-            worker = Worker(
-                client,
-                task_queue=TEMPORAL_TASK_QUEUE,
-                workflows=[DailyScheduledFeedingWorkflow],
-                activities=[trigger_feed, verify_feed, alert_feed_failure],
-            )
+            worker = build_worker(client)
 
             logger.info("Temporal worker started on task queue: %s", TEMPORAL_TASK_QUEUE)
             await worker.run()
