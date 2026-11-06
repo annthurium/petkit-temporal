@@ -18,11 +18,16 @@ from backend.temporal.client import get_temporal_client
 from backend.temporal.activities.feeder_activities import (
     alert_feed_failure,
     check_recent_feed,
+    refresh_feeder_snapshots,
     send_device_command,
     trigger_feed,
     verify_feed,
 )
-from backend.temporal.workflows.feeder_workflows import DeviceCommandWorkflow, FeedWorkflow
+from backend.temporal.workflows.feeder_workflows import (
+    DeviceCommandWorkflow,
+    FeedWorkflow,
+    RefreshFeedersWorkflow,
+)
 
 
 def build_worker(client: Client) -> Worker:
@@ -30,13 +35,14 @@ def build_worker(client: Client) -> Worker:
     return Worker(
         client,
         task_queue=TEMPORAL_TASK_QUEUE,
-        workflows=[FeedWorkflow, DeviceCommandWorkflow],
+        workflows=[FeedWorkflow, DeviceCommandWorkflow, RefreshFeedersWorkflow],
         activities=[
             trigger_feed,
             verify_feed,
             check_recent_feed,
             alert_feed_failure,
             send_device_command,
+            refresh_feeder_snapshots,
         ],
     )
 

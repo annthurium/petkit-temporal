@@ -8,6 +8,7 @@ from backend.client import shutdown
 from backend.config import TEMPORAL_HOST, TEMPORAL_TASK_QUEUE
 from backend.routers.feeders import router as feeders_router
 from backend.temporal.client import get_temporal_client
+from backend.temporal.schedules import ensure_refresh_schedule
 from backend.temporal.worker import build_worker
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,10 @@ async def run_temporal_worker_with_retry(shutdown_event: asyncio.Event) -> None:
         try:
             logger.info("Connecting to Temporal at %s...", TEMPORAL_HOST)
             client = await get_temporal_client()
+
+            # Keeps Firestore snapshots fresh between actions (ADR 0006).
+            if await ensure_refresh_schedule(client):
+                logger.info("Created snapshot refresh schedule; first refresh running now")
 
             worker = build_worker(client)
 

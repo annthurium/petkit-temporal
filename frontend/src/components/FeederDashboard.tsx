@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { type Feeder, refreshFeeder } from '../api';
 import { getCapabilities } from '../deviceCapabilities';
 import FeedSchedulePanel from './FeedSchedule';
@@ -57,13 +57,17 @@ export default function FeederDashboard({ feeder, onRefresh }: Props) {
             </button>
           ))}
         </div>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="text-sm px-3 py-1.5 rounded border border-neon-cyan/40 text-neon-cyan hover:bg-neon-cyan/10 hover:neon-glow-cyan disabled:opacity-50 transition-all duration-300"
-        >
-          {refreshing ? 'Refreshing...' : 'Refresh'}
-        </button>
+        <div className="flex items-center gap-3">
+          {feeder.updated_at && <UpdatedAgo timestamp={feeder.updated_at} />}
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title="Fetch the latest device data from PetKit"
+            className="text-sm px-3 py-1.5 rounded border border-neon-cyan/40 text-neon-cyan hover:bg-neon-cyan/10 hover:neon-glow-cyan disabled:opacity-50 transition-all duration-300"
+          >
+            {refreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       <div className="p-6">
@@ -112,6 +116,30 @@ export default function FeederDashboard({ feeder, onRefresh }: Props) {
         {tab === 'settings' && <FeederSettings feeder={feeder} onDone={onRefresh} />}
       </div>
     </div>
+  );
+}
+
+function formatAgo(timestamp: string, now: number): string {
+  const seconds = Math.max(0, Math.round((now - new Date(timestamp).getTime()) / 1000));
+  if (seconds < 45) return 'just now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return new Date(timestamp).toLocaleString();
+}
+
+// When the worker last pulled this feeder's data from PetKit into Firestore.
+function UpdatedAgo({ timestamp }: { timestamp: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+  return (
+    <span className="text-xs text-vapor-muted" title={new Date(timestamp).toLocaleString()}>
+      Updated {formatAgo(timestamp, now)}
+    </span>
   );
 }
 

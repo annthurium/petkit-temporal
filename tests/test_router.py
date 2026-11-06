@@ -77,15 +77,38 @@ FAKE_FEEDER = _make_feeder(device_id=1)
 FAKE_FEEDERS = {1: FAKE_FEEDER}
 
 
-def _mock_get_feeders(_client):
-    return FAKE_FEEDERS
+FAKE_RECORDS = {
+    "eat": [],
+    "feed": [{"date": "2025-01-15", "time": "08:00", "amount": 10}],
+    "move": [],
+    "pet": [],
+}
 
 
 @pytest.fixture
-def fake_client():
-    client = AsyncMock()
-    client.petkit_entities = FAKE_FEEDERS
-    return client
+def snapshot_store():
+    """In-memory stand-in for the Firestore snapshot collection."""
+    from backend.serializers import serialize_feeder
+
+    store = {
+        1: {
+            **serialize_feeder(FAKE_FEEDER),
+            "records": FAKE_RECORDS,
+            "updated_at": "2025-01-15T08:01:00+00:00",
+        }
+    }
+
+    async def get_snapshot(device_id):
+        return store.get(device_id)
+
+    async def list_snapshots():
+        return list(store.values())
+
+    with (
+        patch("backend.snapshots.get_feeder_snapshot", side_effect=get_snapshot),
+        patch("backend.snapshots.list_feeder_snapshots", side_effect=list_snapshots),
+    ):
+        yield store
 
 
 @pytest.fixture
@@ -111,11 +134,8 @@ def mock_temporal_client():
 
 
 @pytest_asyncio.fixture
-async def client(fake_client, mock_temporal_client):
+async def client(snapshot_store, mock_temporal_client):
     with (
-        patch("backend.routers.feeders.get_client", return_value=fake_client),
-        patch("backend.routers.feeders.refresh_data", return_value=fake_client),
-        patch("backend.routers.feeders.get_feeders", side_effect=_mock_get_feeders),
         patch("backend.routers.feeders.get_temporal_client", return_value=mock_temporal_client),
         patch("backend.main.run_temporal_worker_with_retry", new_callable=AsyncMock),
         patch("backend.client.shutdown", new_callable=AsyncMock),
@@ -139,6 +159,28 @@ class TestListFeeders:
         assert len(data) == 1
         assert data[0]["id"] == 1
         assert data[0]["name"] == "TestFeeder"
+        assert data[0]["updated_at"] == "2025-01-15T08:01:00+00:00"
+        assert "records" not in data[0]  # served by /records
+
+    @pytest.mark.asyncio
+    async def test_empty_before_first_refresh(self, client, snapshot_store):
+        snapshot_store.clear()
+        resp = await client.get("/api/feeders")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+
+class TestRecords:
+    @pytest.mark.asyncio
+    async def test_returns_snapshot_records(self, client):
+        resp = await client.get("/api/feeders/1/records")
+        assert resp.status_code == 200
+        assert resp.json() == FAKE_RECORDS
+
+    @pytest.mark.asyncio
+    async def test_404_for_unknown(self, client):
+        resp = await client.get("/api/feeders/999/records")
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -306,10 +348,28 @@ class TestScheduleCRUD:
 
 class TestRefreshFeeder:
     @pytest.mark.asyncio
-    async def test_returns_refreshed_feeder(self, client):
+    async def test_runs_refresh_workflow_then_returns_snapshot(self, client, mock_temporal_client):
         resp = await client.post("/api/feeders/1/refresh")
         assert resp.status_code == 200
         assert resp.json()["id"] == 1
+        args, kwargs = mock_temporal_client.start_workflow.call_args
+        assert args[1].device_id == 1
+        assert kwargs["id"].startswith("refresh-feeder-1-")
+
+    @pytest.mark.asyncio
+    async def test_refresh_all(self, client, mock_temporal_client):
+        resp = await client.post("/api/feeders/refresh")
+        assert resp.status_code == 200
+        assert [f["id"] for f in resp.json()] == [1]
+        args, _ = mock_temporal_client.start_workflow.call_args
+        assert args[1].device_id is None
+
+    @pytest.mark.asyncio
+    async def test_refresh_all_works_on_empty_database(self, client, snapshot_store, mock_temporal_client):
+        snapshot_store.clear()
+        resp = await client.post("/api/feeders/refresh")
+        assert resp.status_code == 200
+        mock_temporal_client.start_workflow.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_404_for_unknown(self, client):
@@ -349,7 +409,7 @@ class TestDeviceCommands:
             ("/api/feeders/1/food-replenished", None, "food_replenished", None),
         ],
     )
-    async def test_runs_workflow_and_waits(self, client, fake_client, mock_temporal_client, path, body, command, payload):
+    async def test_runs_workflow_and_waits(self, client, mock_temporal_client, path, body, command, payload):
         resp = await client.post(path, json=body)
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
@@ -360,8 +420,6 @@ class TestDeviceCommands:
         assert cmd_input.command == command
         assert cmd_input.payload == payload
         assert kwargs["id"].startswith(f"device-command-1-{command}-")
-        # The API no longer calls PetKit for writes.
-        fake_client.send_api_request.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_failure_returns_502_with_petkit_message(self, client, mock_temporal_client):
@@ -379,7 +437,7 @@ class TestDeviceCommands:
             return SimpleNamespace(id=kwargs["id"], result=never_finishes)
 
         mock_temporal_client.start_workflow.side_effect = start_workflow
-        with patch("backend.routers.feeders.DEVICE_COMMAND_WAIT", timedelta(milliseconds=50)):
+        with patch("backend.routers.feeders.WORKFLOW_WAIT", timedelta(milliseconds=50)):
             resp = await client.post("/api/feeders/1/food-replenished")
         assert resp.status_code == 202
         assert resp.json()["status"] == "pending"
@@ -389,3 +447,25 @@ class TestDeviceCommands:
         resp = await client.post("/api/feeders/999/settings", json={"settings": {"lightMode": 1}})
         assert resp.status_code == 404
         mock_temporal_client.start_workflow.assert_not_awaited()
+
+
+class TestApiNeverTalksToPetKit:
+    """ADR 0006: only Temporal activities may use the PetKit client."""
+
+    def test_routers_do_not_import_petkit(self):
+        import ast
+        from pathlib import Path
+
+        forbidden = ("backend.client", "pypetkitapi")
+        offenders = []
+        for path in Path("backend/routers").glob("*.py"):
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    names = [node.module or ""]
+                else:
+                    continue
+                offenders += [f"{path}: {n}" for n in names if n.startswith(forbidden)]
+        assert offenders == []

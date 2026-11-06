@@ -14,9 +14,12 @@ with workflow.unsafe.imports_passed_through():
         FeedAlertInput,
         ManualFeedInput,
         RecentFeedCheckInput,
+        RefreshSnapshotsInput,
+        RefreshSnapshotsResult,
         VerifyFeedInput,
         alert_feed_failure,
         check_recent_feed,
+        refresh_feeder_snapshots,
         send_device_command,
         trigger_feed,
         verify_feed,
@@ -63,6 +66,16 @@ MAX_FEED_ATTEMPTS = 2
 
 ACTIVITY_TIMEOUT = timedelta(seconds=30)
 
+# Refreshing snapshots reads PetKit and writes Firestore; both are safe to retry.
+SNAPSHOT_ACTIVITY_TIMEOUT = timedelta(seconds=60)
+SNAPSHOT_RETRY_POLICY = RetryPolicy(
+    maximum_attempts=3,
+    backoff_coefficient=2.0,
+    initial_interval=timedelta(seconds=2),
+    maximum_interval=timedelta(seconds=30),
+    non_retryable_error_types=[FEEDER_NOT_FOUND],
+)
+
 
 @dataclass
 class FeedInput:
@@ -93,6 +106,30 @@ def _failure_message(err: ActivityError) -> str:
 
 def _is_feeder_not_found(err: ActivityError) -> bool:
     return isinstance(err.cause, ApplicationError) and err.cause.type == FEEDER_NOT_FOUND
+
+
+async def _refresh_snapshot(device_id: int | None) -> RefreshSnapshotsResult:
+    return await workflow.execute_activity(
+        refresh_feeder_snapshots,
+        RefreshSnapshotsInput(device_id=device_id),
+        start_to_close_timeout=SNAPSHOT_ACTIVITY_TIMEOUT,
+        retry_policy=SNAPSHOT_RETRY_POLICY,
+        summary="Write fresh device snapshot to Firestore",
+    )
+
+
+async def _refresh_snapshot_best_effort(device_id: int) -> None:
+    """Refresh the feeder's snapshot after an action, without failing the action.
+
+    The feed or command already happened; a Firestore or PetKit read hiccup
+    here only means the dashboard is stale until the next refresh.
+    """
+    try:
+        await _refresh_snapshot(device_id)
+    except ActivityError as e:
+        workflow.logger.warning(
+            f"Snapshot refresh failed for device {device_id}: {_failure_message(e)}"
+        )
 
 
 @workflow.defn
@@ -173,6 +210,7 @@ class FeedWorkflow:
                     retry_policy=VERIFY_RETRY_POLICY,
                     summary="Wait for the feed to appear in the device's feed log",
                 )
+                await _refresh_snapshot_best_effort(input.device_id)
                 return FeedResult(
                     status="success",
                     feed_type=input.feed_type,
@@ -193,6 +231,7 @@ class FeedWorkflow:
             retry_policy=ACTIVITY_RETRY_POLICY,
             summary="Alert the user about the feed failure",
         )
+        await _refresh_snapshot_best_effort(input.device_id)
         return FeedResult(
             status="failure",
             feed_type=input.feed_type,
@@ -227,4 +266,19 @@ class DeviceCommandWorkflow:
             retry_policy=DEVICE_COMMAND_RETRY_POLICY,
             summary=f"Send {input.command}",
         )
+        await _refresh_snapshot_best_effort(input.device_id)
         return DeviceCommandResult(device_id=input.device_id, command=input.command)
+
+
+@workflow.defn
+class RefreshFeedersWorkflow:
+    """Refresh device snapshots in Firestore from PetKit.
+
+    Started by the "Refresh" button (one feeder) and by the
+    feeder-snapshot-refresh Schedule (all feeders) so battery and food levels
+    stay current between actions.
+    """
+
+    @workflow.run
+    async def run(self, input: RefreshSnapshotsInput) -> RefreshSnapshotsResult:
+        return await _refresh_snapshot(input.device_id)

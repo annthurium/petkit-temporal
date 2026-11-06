@@ -37,6 +37,26 @@ TEMPORAL_TASK_QUEUE="petkit-tasks"
 FEED_SKIP_WINDOW_HOURS="12"
 ```
 
+### Google Cloud / Firestore
+
+The app stores device snapshots in Firestore. One-time setup:
+
+```bash
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+gcloud auth application-default login   # credentials for the Python client
+gcloud services enable firestore.googleapis.com
+gcloud firestore databases create --location=us-central1
+```
+
+Then set `GOOGLE_CLOUD_PROJECT` in `.env`.
+
+Firestore security rules live in `firestore.rules` and deny all client access; only the backend reads Firestore (see `docs/adr/0007`). To publish them:
+
+```bash
+npx firebase-tools deploy --only firestore:rules --project YOUR_PROJECT_ID
+```
+
 ### Install dependencies
 
 ```bash
@@ -81,6 +101,7 @@ The Temporal web UI is available at `http://localhost:8233` for inspecting workf
   5. if it's still unconfirmed, raise an alert
 - **Manual feeds** use a fixed workflow ID per device, so a double-click can't start two feeds at once.
 - **Device commands** (settings, desiccant reset, food replenished) run as a `DeviceCommandWorkflow` with normal retries. The API waits up to 25s for the result.
+- **Device data** (status, settings, feed history) is read from Firestore snapshots, never from PetKit directly. The worker writes a snapshot after every feed and command, on Refresh, and every 30 minutes (`feeder-snapshot-refresh` schedule). Only Temporal activities talk to PetKit.
 
 Design decisions are recorded in [docs/adr/](docs/adr/).
 
@@ -106,7 +127,9 @@ uv run pytest tests/ -v
 ```
 backend/
   main.py            # FastAPI app setup, lifespan, Temporal worker startup
-  client.py          # PetKit API client singleton
+  client.py          # PetKit API client singleton (used only by activities)
+  serializers.py     # PetKit objects -> snapshot dicts
+  snapshots.py       # Firestore snapshot read/write
   config.py          # Environment variable config
   routers/
     feeders.py       # All /api/feeders endpoints

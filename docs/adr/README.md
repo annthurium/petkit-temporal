@@ -20,8 +20,9 @@ gave up. Format follows [Michael Nygard's ADR template](https://cognitect.com/bl
 | [0002](0002-temporal-schedules-and-short-lived-feed-workflow.md) | Temporal Schedules + short-lived FeedWorkflow | Accepted |
 | [0003](0003-at-most-once-feed-with-polled-verification.md) | Send feeds at most once; verify by polling through activity retries | Accepted |
 | [0004](0004-stateless-skip-rule-from-device-feed-log.md) | Stateless skip rule from the device's feed log | Accepted |
-| [0005](0005-firebase-auth-with-email-allowlist.md) | Firebase Auth with an email allowlist | Proposed |
+| [0005](0005-firebase-auth-with-email-allowlist.md) | Firebase Auth with an email allowlist | Proposed (revisit) |
 | [0006](0006-worker-is-the-only-petkit-client.md) | The worker is the only PetKit client; move writes first, reads with Firestore | Accepted |
+| [0007](0007-browser-reads-through-the-api.md) | Browser reads snapshots through the API; Firestore stays locked down | Accepted |
 
 ## Template
 

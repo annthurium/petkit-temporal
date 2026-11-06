@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "python-dotenv>=1.0.0",
     "temporalio>=1.21.1",
+    "google-cloud-firestore>=2.34.1",
 ]
 
 [tool.pytest.ini_options]

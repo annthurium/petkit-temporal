@@ -28,16 +28,18 @@ Cloud Run services, and two clients would keep logging each other out.
 - **Order of work:**
   - **Step 2: writes.** All three writes go through one `DeviceCommandWorkflow`
     that runs a `send_device_command` activity. These commands are idempotent,
-    so unlike feeds they retry normally (3 attempts). Until step 3, **the API
-    waits for the workflow result** (up to 25 s), because the UI refreshes the
+    so unlike feeds they retry normally (3 attempts). **The API waits for the
+    workflow result** (up to 25 s), because the UI refreshes the
     feeder right after a write and would otherwise show stale settings and
     report success before anything happened. Outcomes: 200 when done, 502 with
     PetKit's message on failure, 202 `pending` if the wait runs out (the
     workflow keeps running).
-  - **Step 3: reads.** Activities write device snapshots (state, settings, feed
-    history, last result) to Firestore after each action and on refresh. The
-    frontend reads Firestore live. Then the API's last PetKit calls, including
-    the feeder-exists checks, are removed.
+  - **Step 3: reads.** The `refresh_feeder_snapshots` activity writes one
+    Firestore document per feeder (state, settings, feed history). It runs
+    after every feed and device command, from the Refresh button, and from the
+    `feeder-snapshot-refresh` Schedule every 30 minutes. The API reads those
+    documents; how the browser gets them is [0007](0007-browser-reads-through-the-api.md).
+    A test fails if anything under `backend/routers/` imports PetKit code.
 
 ## Alternatives considered
 
@@ -56,10 +58,7 @@ Cloud Run services, and two clients would keep logging each other out.
 - One PetKit session, held by one worker instance (pool capped at one).
 - Every PetKit call gets Temporal retries and shows up in the Temporal UI, not
   just feeds.
-- Between steps 2 and 3, the API still reads from PetKit directly. That's fine
-  locally, where the API and worker share a process, but the app isn't ready to
-  split into two services until step 3 is done.
-- Writes are synchronous for now (the API waits up to 25 s per request). In
-  step 3 they should become asynchronous: the API returns once the workflow
-  starts, and the UI learns the outcome from Firestore. Waiting on a request
-  would also hold a Cloud Run request open through a worker cold start.
+- Writes are synchronous: the API waits up to 25 s per request (see
+  [0007](0007-browser-reads-through-the-api.md) for why this stayed). On Cloud
+  Run that holds a request open through a worker cold start, which is
+  acceptable at this scale.

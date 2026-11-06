@@ -15,6 +15,7 @@ from temporalio.client import (
     ScheduleActionStartWorkflow,
     ScheduleAlreadyRunningError,
     ScheduleCalendarSpec,
+    ScheduleIntervalSpec,
     ScheduleOverlapPolicy,
     SchedulePolicy,
     ScheduleRange,
@@ -24,8 +25,19 @@ from temporalio.client import (
 )
 from temporalio.service import RPCError, RPCStatusCode
 
-from backend.config import FEED_SKIP_WINDOW_HOURS, PETKIT_TIMEZONE, TEMPORAL_TASK_QUEUE
-from backend.temporal.workflows.feeder_workflows import FeedInput, FeedResult, FeedWorkflow
+from backend.config import (
+    FEED_SKIP_WINDOW_HOURS,
+    PETKIT_TIMEZONE,
+    SNAPSHOT_REFRESH_MINUTES,
+    TEMPORAL_TASK_QUEUE,
+)
+from backend.temporal.activities.feeder_activities import RefreshSnapshotsInput
+from backend.temporal.workflows.feeder_workflows import (
+    FeedInput,
+    FeedResult,
+    FeedWorkflow,
+    RefreshFeedersWorkflow,
+)
 
 # Upper bound on a single feed run. If no worker picks it up within this time,
 # the run times out and shows as a failure, rather than feeding hours late.
@@ -38,6 +50,9 @@ SCHEDULE_CATCHUP_WINDOW = timedelta(minutes=30)
 # How many recent closed FeedWorkflows to scan when looking for a device's
 # latest result.
 _RECENT_FEEDS_SCAN_LIMIT = 50
+
+
+REFRESH_SCHEDULE_ID = "feeder-snapshot-refresh"
 
 
 def schedule_id(device_id: int) -> str:
@@ -176,3 +191,39 @@ async def latest_feed_result(client: Client, device_id: int) -> dict | None:
             timestamp=latest.close_time.isoformat(),
         )
     )
+
+
+def build_refresh_schedule() -> Schedule:
+    return Schedule(
+        action=ScheduleActionStartWorkflow(
+            RefreshFeedersWorkflow.run,
+            RefreshSnapshotsInput(device_id=None),
+            id="refresh-feeders",
+            task_queue=TEMPORAL_TASK_QUEUE,
+            execution_timeout=timedelta(minutes=10),
+            static_summary="Refresh all feeder snapshots",
+        ),
+        spec=ScheduleSpec(
+            intervals=[ScheduleIntervalSpec(every=timedelta(minutes=SNAPSHOT_REFRESH_MINUTES))]
+        ),
+        # Missed refreshes aren't worth catching up on; the next one will do.
+        policy=SchedulePolicy(
+            overlap=ScheduleOverlapPolicy.SKIP,
+            catchup_window=timedelta(minutes=1),
+        ),
+    )
+
+
+async def ensure_refresh_schedule(client: Client) -> bool:
+    """Create the periodic snapshot refresh schedule if it doesn't exist.
+
+    Returns True if it was created. A newly created schedule runs once right
+    away so a fresh Firestore database gets data without waiting an interval.
+    """
+    try:
+        await client.create_schedule(
+            REFRESH_SCHEDULE_ID, build_refresh_schedule(), trigger_immediately=True
+        )
+        return True
+    except ScheduleAlreadyRunningError:
+        return False

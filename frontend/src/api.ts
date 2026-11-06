@@ -56,6 +56,8 @@ export interface Feeder {
   settings: FeederSettings | null;
   feed_state: FeedState | null;
   manual_feed: { amount: number | null; amount1: number | null; amount2: number | null; time: number | null; status: number | null } | null;
+  // When the worker last wrote this snapshot from PetKit (ISO 8601, UTC).
+  updated_at?: string;
 }
 
 export interface FeederRecords {
@@ -91,6 +93,8 @@ export const resetDesiccant = (id: number) =>
 export const foodReplenished = (id: number) =>
   api.post<DeviceCommandResponse>(`/feeders/${id}/food-replenished`).then(r => r.data);
 export const refreshFeeder = (id: number) => api.post<Feeder>(`/feeders/${id}/refresh`).then(r => r.data);
+// Loads every feeder on the account from PetKit into Firestore (via the worker).
+export const refreshAllFeeders = () => api.post(`/feeders/refresh`).then(r => r.data);
 
 export interface FeedAlert {
   device_id: number;

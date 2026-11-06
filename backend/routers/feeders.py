@@ -1,3 +1,9 @@
+"""Feeder endpoints.
+
+The API never talks to PetKit (ADR 0006). Reads come from Firestore snapshots
+written by the worker; every action runs as a Temporal workflow.
+"""
+
 import asyncio
 import logging
 import uuid
@@ -10,15 +16,20 @@ from temporalio.client import WorkflowFailureError
 from temporalio.common import WorkflowIDConflictPolicy
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
-from backend.client import get_client, refresh_data, get_feeders, fetch_d4_feed_events
+from backend import snapshots
 from backend.config import TEMPORAL_TASK_QUEUE
+from backend.serializers import EMPTY_RECORDS
 from backend.temporal import schedules
-from backend.temporal.activities.feeder_activities import DeviceCommandInput
+from backend.temporal.activities.feeder_activities import (
+    DeviceCommandInput,
+    RefreshSnapshotsInput,
+)
 from backend.temporal.client import get_temporal_client
 from backend.temporal.workflows.feeder_workflows import (
     DeviceCommandWorkflow,
     FeedInput,
     FeedWorkflow,
+    RefreshFeedersWorkflow,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,136 +37,130 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/feeders", tags=["feeders"])
 
 
-def _serialize_feeder(feeder) -> dict:
-    """Convert a Feeder object to a JSON-safe dict."""
-    state = feeder.state
-    settings = feeder.settings
-    feed_state = getattr(state, "feed_state", None) if state else None
-    device_nfo = getattr(feeder, "device_nfo", None)
-
-    return {
-        "id": feeder.id,
-        "name": feeder.name,
-        "type": getattr(device_nfo, "device_type", None) if device_nfo else None,
-        "firmware": feeder.firmware,
-        "state": {
-            "battery_power": getattr(state, "battery_power", None),
-            "battery_status": getattr(state, "battery_status", None),
-            "food": getattr(state, "food", None),
-            "food1": getattr(state, "food1", None),
-            "food2": getattr(state, "food2", None),
-            "eating": getattr(state, "eating", None),
-            "feeding": getattr(state, "feeding", None),
-            "desiccant_left_days": getattr(state, "desiccant_left_days", None),
-            "error_code": getattr(state, "error_code", None),
-            "error_msg": getattr(state, "error_msg", None),
-            "weight": getattr(state, "weight", None),
-            "pim": getattr(state, "pim", None),
-            "online": getattr(state, "wifi", None),
-        } if state else None,
-        "settings": {
-            "light_mode": getattr(settings, "light_mode", None),
-            "light_multi_range": getattr(settings, "light_multi_range", None),
-            "volume": getattr(settings, "volume", None),
-            "feed_sound": getattr(settings, "feed_sound", None),
-            "system_sound_enable": getattr(settings, "system_sound_enable", None),
-            "tone_mode": getattr(settings, "tone_mode", None),
-            "eat_notify": getattr(settings, "eat_notify", None),
-            "feed_notify": getattr(settings, "feed_notify", None),
-            "food_notify": getattr(settings, "food_notify", None),
-            "food_warn": getattr(settings, "food_warn", None),
-            "food_warn_range": getattr(settings, "food_warn_range", None),
-            "eat_detection": getattr(settings, "eat_detection", None),
-            "eat_sensitivity": getattr(settings, "eat_sensitivity", None),
-            "move_detection": getattr(settings, "move_detection", None),
-            "pet_detection": getattr(settings, "pet_detection", None),
-            "surplus_control": getattr(settings, "surplus_control", None),
-            "surplus_standard": getattr(settings, "surplus_standard", None),
-            "camera": getattr(settings, "camera", None),
-        } if settings else None,
-        "feed_state": {
-            "eat_count": getattr(feed_state, "eat_count", None),
-            "eat_avg": getattr(feed_state, "eat_avg", None),
-            "add_amount_total": getattr(feed_state, "add_amount_total", None),
-            "plan_amount_total": getattr(feed_state, "plan_amount_total", None),
-            "real_amount_total": getattr(feed_state, "real_amount_total", None),
-        } if feed_state else None,
-        "manual_feed": {
-            "amount": getattr(feeder.manual_feed, "amount", None),
-            "amount1": getattr(feeder.manual_feed, "amount1", None),
-            "amount2": getattr(feeder.manual_feed, "amount2", None),
-            "time": getattr(feeder.manual_feed, "time", None),
-            "status": getattr(feeder.manual_feed, "status", None),
-        } if getattr(feeder, "manual_feed", None) else None,
-    }
+def _public_feeder(snapshot: dict) -> dict:
+    """A snapshot without its feed history (served by /records instead)."""
+    return {k: v for k, v in snapshot.items() if k != "records"}
 
 
-async def _fetch_d4_records(client, device_id: int) -> dict:
-    """Fetch feed history for a D4 feeder, formatted for the records endpoint."""
-    events = await fetch_d4_feed_events(client, device_id, days=7)
-    feed_list = []
-    for ev in events:
-        hours, remainder = divmod(ev["seconds"], 3600)
-        minutes = remainder // 60
-        feed_list.append({
-            "date": ev["date"].strftime("%Y-%m-%d"),
-            "time": f"{hours:02d}:{minutes:02d}",
-            "amount": ev["amount"],
-        })
-    return {"eat": [], "feed": feed_list, "move": [], "pet": []}
+async def _require_snapshot(device_id: int) -> dict:
+    snapshot = await snapshots.get_feeder_snapshot(device_id)
+    if snapshot is None:
+        raise HTTPException(404, "Feeder not found")
+    return snapshot
 
 
-def _serialize_records(feeder) -> dict:
-    records = feeder.device_records
-    if not records:
-        return {"eat": [], "feed": [], "move": [], "pet": []}
+async def _require_feeder(device_id: int) -> None:
+    await _require_snapshot(device_id)
 
-    def _serialize_record_list(items):
-        if not items:
-            return []
-        result = []
-        for item in items:
-            result.append({
-                k: v for k, v in vars(item).items()
-                if not k.startswith("_")
-            })
-        return result
 
-    return {
-        "eat": _serialize_record_list(getattr(records, "eat", None)),
-        "feed": _serialize_record_list(getattr(records, "feed", None)),
-        "move": _serialize_record_list(getattr(records, "move", None)),
-        "pet": _serialize_record_list(getattr(records, "pet", None)),
-    }
+# ---------------------------------------------------------------------------
+# Waiting on workflows
+# ---------------------------------------------------------------------------
+
+# How long a request waits for its workflow before answering 202 "pending".
+# The workflow keeps running either way.
+WORKFLOW_WAIT = timedelta(seconds=25)
+DEVICE_COMMAND_WORKFLOW_TIMEOUT = timedelta(minutes=5)
+
+
+def _root_cause_message(err: BaseException) -> str:
+    """Return the innermost failure message (WorkflowFailure -> Activity -> Application)."""
+    while getattr(err, "cause", None) is not None:
+        err = err.cause
+    return getattr(err, "message", None) or str(err)
+
+
+async def _start_and_wait(workflow_run, arg, *, id: str, summary: str, execution_timeout: timedelta):
+    """Start a workflow and wait for it.
+
+    Returns (handle, None) when it finished, or (handle, JSONResponse 202)
+    when the wait ran out. Raises HTTPException 502 if the workflow failed.
+
+    The UI polls the API rather than listening to Firestore, so waiting here
+    means the next poll already sees the updated snapshot (ADR 0006).
+    """
+    temporal_client = await get_temporal_client()
+    handle = await temporal_client.start_workflow(
+        workflow_run,
+        arg,
+        id=id,
+        task_queue=TEMPORAL_TASK_QUEUE,
+        execution_timeout=execution_timeout,
+        static_summary=summary,
+    )
+    try:
+        await asyncio.wait_for(handle.result(), timeout=WORKFLOW_WAIT.total_seconds())
+    except asyncio.TimeoutError:
+        return handle, JSONResponse(
+            status_code=202, content={"status": "pending", "workflow_id": handle.id}
+        )
+    except WorkflowFailureError as e:
+        message = _root_cause_message(e)
+        logger.warning("Workflow %s failed: %s", handle.id, message)
+        raise HTTPException(502, message)
+    return handle, None
+
+
+# ---------------------------------------------------------------------------
+# Reads (Firestore)
+# ---------------------------------------------------------------------------
 
 
 @router.get("")
 async def list_feeders():
-    client = await get_client()
-    feeders = get_feeders(client)
-    return [_serialize_feeder(f) for f in feeders.values()]
+    feeders = await snapshots.list_feeder_snapshots()
+    return [_public_feeder(f) for f in sorted(feeders, key=lambda f: f["id"])]
 
 
 @router.get("/{device_id}")
 async def get_feeder(device_id: int):
-    client = await get_client()
-    feeders = get_feeders(client)
-    if device_id not in feeders:
-        raise HTTPException(404, "Feeder not found")
-    return _serialize_feeder(feeders[device_id])
+    return _public_feeder(await _require_snapshot(device_id))
 
 
 @router.get("/{device_id}/records")
 async def get_feeder_records(device_id: int):
-    client = await refresh_data()
-    feeders = get_feeders(client)
-    if device_id not in feeders:
-        raise HTTPException(404, "Feeder not found")
-    feeder = feeders[device_id]
-    device_type = getattr(getattr(feeder, "device_nfo", None), "device_type", None)
-    if device_type == "d4":
-        return await _fetch_d4_records(client, device_id)
-    return _serialize_records(feeder)
+    snapshot = await _require_snapshot(device_id)
+    return snapshot.get("records") or dict(EMPTY_RECORDS)
+
+
+# ---------------------------------------------------------------------------
+# Refresh (PetKit -> Firestore, via the worker)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/refresh")
+async def refresh_all_feeders():
+    """Refresh every feeder's snapshot. Also how a brand-new database gets data."""
+    _, pending = await _start_and_wait(
+        RefreshFeedersWorkflow.run,
+        RefreshSnapshotsInput(device_id=None),
+        id=f"refresh-feeders-manual-{uuid.uuid4().hex[:8]}",
+        summary="Refresh all feeders",
+        execution_timeout=timedelta(minutes=5),
+    )
+    if pending:
+        return pending
+    return await list_feeders()
+
+
+@router.post("/{device_id}/refresh")
+async def refresh_feeder(device_id: int):
+    await _require_feeder(device_id)
+    _, pending = await _start_and_wait(
+        RefreshFeedersWorkflow.run,
+        RefreshSnapshotsInput(device_id=device_id),
+        id=f"refresh-feeder-{device_id}-{uuid.uuid4().hex[:8]}",
+        summary="Refresh feeder",
+        execution_timeout=timedelta(minutes=5),
+    )
+    if pending:
+        return pending
+    return _public_feeder(await _require_snapshot(device_id))
+
+
+# ---------------------------------------------------------------------------
+# Feeding
+# ---------------------------------------------------------------------------
 
 
 class ManualFeedRequest(BaseModel):
@@ -166,10 +171,7 @@ class ManualFeedRequest(BaseModel):
 
 @router.post("/{device_id}/feed")
 async def manual_feed_endpoint(device_id: int, req: ManualFeedRequest):
-    petkit_client = await get_client()
-    feeders = get_feeders(petkit_client)
-    if device_id not in feeders:
-        raise HTTPException(404, "Feeder not found")
+    await _require_feeder(device_id)
 
     if req.amount is None and req.amount1 is None and req.amount2 is None:
         raise HTTPException(400, "Must provide amount, amount1, or amount2")
@@ -202,50 +204,26 @@ async def manual_feed_endpoint(device_id: int, req: ManualFeedRequest):
     return {"status": "ok", "via": "workflow", "workflow_id": handle.id}
 
 
+# ---------------------------------------------------------------------------
+# Device commands
+# ---------------------------------------------------------------------------
+
+
 class UpdateSettingsRequest(BaseModel):
     settings: dict
 
 
-# How long a device-command request waits for its workflow before answering
-# 202 "pending". The workflow keeps running either way.
-DEVICE_COMMAND_WAIT = timedelta(seconds=25)
-DEVICE_COMMAND_WORKFLOW_TIMEOUT = timedelta(minutes=5)
-
-
-def _root_cause_message(err: BaseException) -> str:
-    """Return the innermost failure message (WorkflowFailure -> Activity -> Application)."""
-    while getattr(err, "cause", None) is not None:
-        err = err.cause
-    return getattr(err, "message", None) or str(err)
-
-
 async def _run_device_command(device_id: int, command: str, payload: dict | None = None):
-    """Run a DeviceCommandWorkflow and wait for its result.
-
-    Until Firestore exists (step 3), the UI refreshes right after a write, so
-    we wait for the outcome instead of returning as soon as the workflow
-    starts. See ADR 0006.
-    """
     await _require_feeder(device_id)
-    temporal_client = await get_temporal_client()
-    handle = await temporal_client.start_workflow(
+    handle, pending = await _start_and_wait(
         DeviceCommandWorkflow.run,
         DeviceCommandInput(device_id=device_id, command=command, payload=payload),
         id=f"device-command-{device_id}-{command}-{uuid.uuid4().hex[:8]}",
-        task_queue=TEMPORAL_TASK_QUEUE,
+        summary=f"Device command: {command}",
         execution_timeout=DEVICE_COMMAND_WORKFLOW_TIMEOUT,
-        static_summary=f"Device command: {command}",
     )
-    try:
-        await asyncio.wait_for(handle.result(), timeout=DEVICE_COMMAND_WAIT.total_seconds())
-    except asyncio.TimeoutError:
-        return JSONResponse(
-            status_code=202, content={"status": "pending", "workflow_id": handle.id}
-        )
-    except WorkflowFailureError as e:
-        message = _root_cause_message(e)
-        logger.warning("Device command %s failed for %s: %s", command, device_id, message)
-        raise HTTPException(502, message)
+    if pending:
+        return pending
     return {"status": "ok", "workflow_id": handle.id}
 
 
@@ -264,13 +242,9 @@ async def food_replenished(device_id: int):
     return await _run_device_command(device_id, "food_replenished")
 
 
-@router.post("/{device_id}/refresh")
-async def refresh_feeder(device_id: int):
-    client = await refresh_data()
-    feeders = get_feeders(client)
-    if device_id not in feeders:
-        raise HTTPException(404, "Feeder not found")
-    return _serialize_feeder(feeders[device_id])
+# ---------------------------------------------------------------------------
+# Schedules (Temporal only)
+# ---------------------------------------------------------------------------
 
 
 class ScheduleRequest(BaseModel):
@@ -291,12 +265,6 @@ async def _schedule_response(temporal_client, device_id: int) -> dict | None:
             "timestamp": last_feed_result["timestamp"],
         }
     return {**schedule, "last_feed_result": last_feed_result, "last_alert": last_alert}
-
-
-async def _require_feeder(device_id: int) -> None:
-    client = await get_client()
-    if device_id not in get_feeders(client):
-        raise HTTPException(404, "Feeder not found")
 
 
 @router.get("/{device_id}/schedule")

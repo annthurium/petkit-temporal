@@ -306,6 +306,55 @@ async def check_recent_feed(input: RecentFeedCheckInput) -> RecentFeedCheck:
 
 
 @dataclass
+class RefreshSnapshotsInput:
+    device_id: int | None = None  # None = every feeder on the account
+
+
+@dataclass
+class RefreshSnapshotsResult:
+    device_ids: list[int]
+
+
+@activity.defn
+async def refresh_feeder_snapshots(input: RefreshSnapshotsInput) -> RefreshSnapshotsResult:
+    """Fetch fresh device data from PetKit and write snapshots to Firestore.
+
+    This is how the API learns device state without its own PetKit session
+    (ADR 0006). Read-only on the PetKit side, so it retries freely.
+    """
+    from backend import snapshots
+    from backend.client import fetch_d4_feed_events
+    from backend.serializers import d4_records_from_events, serialize_feeder, serialize_records
+
+    try:
+        client = await refresh_data()
+    except PetkitSessionExpiredError:
+        await reset_client()
+        raise
+
+    feeders = get_feeders(client)
+    if input.device_id is not None:
+        if input.device_id not in feeders:
+            raise ApplicationError(
+                f"Feeder {input.device_id} not found",
+                type=FEEDER_NOT_FOUND,
+                non_retryable=True,
+            )
+        feeders = {input.device_id: feeders[input.device_id]}
+
+    for device_id, feeder in feeders.items():
+        device_type = getattr(getattr(feeder, "device_nfo", None), "device_type", None)
+        if device_type == "d4":
+            # pypetkitapi doesn't parse D4 records; use the raw endpoint.
+            records = d4_records_from_events(await fetch_d4_feed_events(client, device_id, days=7))
+        else:
+            records = serialize_records(feeder)
+        await snapshots.write_feeder_snapshot(serialize_feeder(feeder), records)
+
+    return RefreshSnapshotsResult(device_ids=list(feeders))
+
+
+@dataclass
 class FeedAlertInput:
     device_id: int
     reason: str

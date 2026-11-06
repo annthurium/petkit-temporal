@@ -161,3 +161,28 @@ class TestLatestFeedResult:
         assert latest["status"] == "failure"
         assert latest["feed_type"] == "scheduled"
         assert latest["message"] == "Feed workflow timed out"
+
+
+class TestRefreshSchedule:
+    def test_runs_refresh_workflow_on_interval(self):
+        s = schedules.build_refresh_schedule()
+        assert s.action.workflow == "RefreshFeedersWorkflow"
+        [feed_input] = s.action.args
+        assert feed_input.device_id is None  # all feeders
+        [interval] = s.spec.intervals
+        assert interval.every == timedelta(minutes=schedules.SNAPSHOT_REFRESH_MINUTES)
+
+    @pytest.mark.asyncio
+    async def test_ensure_creates_and_triggers_immediately(self):
+        client = MagicMock()
+        client.create_schedule = AsyncMock()
+        assert await schedules.ensure_refresh_schedule(client) is True
+        args, kwargs = client.create_schedule.call_args
+        assert args[0] == "feeder-snapshot-refresh"
+        assert kwargs["trigger_immediately"] is True
+
+    @pytest.mark.asyncio
+    async def test_ensure_is_noop_when_exists(self):
+        client = MagicMock()
+        client.create_schedule = AsyncMock(side_effect=ScheduleAlreadyRunningError())
+        assert await schedules.ensure_refresh_schedule(client) is False

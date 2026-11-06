@@ -14,6 +14,9 @@ from temporalio import workflow
 from temporalio.exceptions import ActivityError, ApplicationError, TimeoutError, TimeoutType
 
 from backend.temporal.activities.feeder_activities import (
+    RefreshSnapshotsInput,
+    RefreshSnapshotsResult,
+    refresh_feeder_snapshots,
     COMMAND_REJECTED,
     UNKNOWN_COMMAND,
     DeviceCommandInput,
@@ -34,6 +37,7 @@ from backend.temporal.activities.feeder_activities import (
     verify_feed,
 )
 from backend.temporal.workflows.feeder_workflows import (
+    RefreshFeedersWorkflow,
     DEVICE_COMMAND_RETRY_POLICY,
     DeviceCommandWorkflow,
     MAX_FEED_ATTEMPTS,
@@ -362,6 +366,9 @@ class _FakeActivities:
     async def __call__(self, fn, arg, **kwargs):
         name = fn.__name__
         self.calls.append((name, arg, kwargs))
+        if name == "refresh_feeder_snapshots" and name not in self.responses:
+            # Snapshot refreshes succeed unless a test scripts otherwise.
+            return RefreshSnapshotsResult(device_ids=[arg.device_id])
         queue = self.responses.get(name)
         if not queue:
             raise AssertionError(f"Unexpected activity call: {name}")
@@ -401,7 +408,7 @@ class TestFeedWorkflow:
         assert result.feed_type == "manual"
         assert result.attempts == 1
         assert result.timestamp == VERIFIED.feed_at
-        assert fake.names() == ["trigger_feed", "verify_feed"]
+        assert fake.names() == ["trigger_feed", "verify_feed", "refresh_feeder_snapshots"]
         assert fake.calls[0][1].amount == 5
         assert fake.calls[0][2]["retry_policy"] is TRIGGER_RETRY_POLICY
         assert fake.calls[1][2]["retry_policy"] is VERIFY_RETRY_POLICY
@@ -436,7 +443,7 @@ class TestFeedWorkflow:
         )
         assert result.status == "success"
         assert result.feed_type == "scheduled"
-        assert fake.names() == ["check_recent_feed", "trigger_feed", "verify_feed"]
+        assert fake.names() == ["check_recent_feed", "trigger_feed", "verify_feed", "refresh_feeder_snapshots"]
 
     @pytest.mark.asyncio
     async def test_unconfirmed_feed_retries_trigger_once_then_succeeds(self):
@@ -447,7 +454,7 @@ class TestFeedWorkflow:
         result = await _run(FeedInput(device_id=100, amount=5), fake)
         assert result.status == "success"
         assert result.attempts == 2
-        assert fake.names() == ["trigger_feed", "verify_feed", "trigger_feed", "verify_feed"]
+        assert fake.names() == ["trigger_feed", "verify_feed", "trigger_feed", "verify_feed", "refresh_feeder_snapshots"]
 
     @pytest.mark.asyncio
     async def test_gives_up_and_alerts_after_max_attempts(self):
@@ -460,7 +467,7 @@ class TestFeedWorkflow:
         assert result.status == "failure"
         assert result.attempts == MAX_FEED_ATTEMPTS
         assert result.message == "Feed not yet recorded by device"
-        assert fake.names()[-1] == "alert_feed_failure"
+        assert fake.names()[-2:] == ["alert_feed_failure", "refresh_feeder_snapshots"]
         assert fake.names().count("trigger_feed") == MAX_FEED_ATTEMPTS
 
     @pytest.mark.asyncio
@@ -470,7 +477,7 @@ class TestFeedWorkflow:
         fake = _FakeActivities(trigger_feed=[timeout], verify_feed=[VERIFIED])
         result = await _run(FeedInput(device_id=100, amount=5), fake)
         assert result.status == "success"
-        assert fake.names() == ["trigger_feed", "verify_feed"]  # no second trigger
+        assert fake.names() == ["trigger_feed", "verify_feed", "refresh_feeder_snapshots"]  # no second trigger
 
     @pytest.mark.asyncio
     async def test_rejected_trigger_reports_petkit_error(self):
@@ -483,7 +490,8 @@ class TestFeedWorkflow:
         result = await _run(FeedInput(device_id=100, amount=5), fake)
         assert result.status == "failure"
         assert result.message == "Device is offline"
-        assert fake.calls[-1][1].reason == "Device is offline"
+        alert_call = next(c for c in fake.calls if c[0] == "alert_feed_failure")
+        assert alert_call[1].reason == "Device is offline"
 
     @pytest.mark.asyncio
     async def test_feeder_not_found_alerts_without_verifying(self):
@@ -492,7 +500,7 @@ class TestFeedWorkflow:
         result = await _run(FeedInput(device_id=100, amount=5), fake)
         assert result.status == "failure"
         assert result.attempts == 1
-        assert fake.names() == ["trigger_feed", "alert_feed_failure"]
+        assert fake.names() == ["trigger_feed", "alert_feed_failure", "refresh_feeder_snapshots"]
 
     @pytest.mark.asyncio
     async def test_verify_uses_attempt_start_time_as_threshold(self):
@@ -609,3 +617,104 @@ class TestDeviceCommandWorkflow:
         assert DEVICE_COMMAND_RETRY_POLICY.maximum_attempts > 1
         assert FEEDER_NOT_FOUND in DEVICE_COMMAND_RETRY_POLICY.non_retryable_error_types
         assert UNKNOWN_COMMAND in DEVICE_COMMAND_RETRY_POLICY.non_retryable_error_types
+
+
+class TestSnapshotRefreshInWorkflows:
+    @pytest.mark.asyncio
+    async def test_skipped_feed_does_not_refresh(self):
+        fake = _FakeActivities(check_recent_feed=[RecentFeedCheck(fed_recently=True, last_feed_at="t")])
+        await _run(FeedInput(device_id=100, amount=10, feed_type="scheduled"), fake)
+        assert "refresh_feeder_snapshots" not in fake.names()
+
+    @pytest.mark.asyncio
+    async def test_refresh_failure_does_not_fail_the_feed(self):
+        broken = _activity_error(ApplicationError("Firestore unavailable"))
+        fake = _FakeActivities(
+            trigger_feed=[{"status": "ok"}],
+            verify_feed=[VERIFIED],
+            refresh_feeder_snapshots=[broken],
+        )
+        result = await _run(FeedInput(device_id=100, amount=5), fake)
+        assert result.status == "success"
+
+    @pytest.mark.asyncio
+    async def test_failed_device_command_does_not_refresh(self):
+        fake = _FakeActivities(send_device_command=[_activity_error(ApplicationError("offline"))])
+
+        async def execute_activity(fn, arg, **kwargs):
+            return await fake(fn, arg, **kwargs)
+
+        with patch.object(workflow, "execute_activity", side_effect=execute_activity):
+            with pytest.raises(ActivityError):
+                await DeviceCommandWorkflow().run(DeviceCommandInput(device_id=100, command="reset_desiccant"))
+        assert fake.names() == ["send_device_command"]
+
+    @pytest.mark.asyncio
+    async def test_refresh_workflow_refreshes_requested_device(self):
+        fake = _FakeActivities()
+
+        async def execute_activity(fn, arg, **kwargs):
+            return await fake(fn, arg, **kwargs)
+
+        with patch.object(workflow, "execute_activity", side_effect=execute_activity):
+            result = await RefreshFeedersWorkflow().run(RefreshSnapshotsInput(device_id=None))
+        assert fake.names() == ["refresh_feeder_snapshots"]
+        assert fake.calls[0][1].device_id is None
+        assert result.device_ids == [None]
+
+
+# ---------------------------------------------------------------------------
+# Activity: refresh_feeder_snapshots
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshFeederSnapshotsActivity:
+    def _feeder(self, device_id, device_type):
+        from tests.test_router import _make_feeder as full_feeder
+
+        f = full_feeder(device_id=device_id)
+        f.device_nfo.device_type = device_type
+        return f
+
+    @pytest.mark.asyncio
+    async def test_writes_snapshot_for_every_feeder(self):
+        now = datetime(2025, 1, 15, 8, 30, tzinfo=timezone.utc)
+        feeders = {1: self._feeder(1, "d4"), 2: self._feeder(2, "d3")}
+        with (
+            patch(f"{ACT}.refresh_data", return_value=AsyncMock()),
+            patch(f"{ACT}.get_feeders", return_value=feeders),
+            patch("backend.client.fetch_d4_feed_events", return_value=_events_at(now)),
+            patch("backend.snapshots.write_feeder_snapshot", new_callable=AsyncMock) as write,
+        ):
+            result = await refresh_feeder_snapshots(RefreshSnapshotsInput())
+
+        assert result.device_ids == [1, 2]
+        assert write.await_count == 2
+        d4_feeder, d4_records = write.await_args_list[0].args
+        assert d4_feeder["id"] == 1
+        assert d4_records["feed"] == [{"date": "2025-01-15", "time": "08:30", "amount": 10}]
+        d3_feeder, d3_records = write.await_args_list[1].args
+        assert d3_feeder["id"] == 2
+        assert d3_records == {"eat": [], "feed": [], "move": [], "pet": []}
+
+    @pytest.mark.asyncio
+    async def test_single_device(self):
+        feeders = {1: self._feeder(1, "d3"), 2: self._feeder(2, "d3")}
+        with (
+            patch(f"{ACT}.refresh_data", return_value=AsyncMock()),
+            patch(f"{ACT}.get_feeders", return_value=feeders),
+            patch("backend.snapshots.write_feeder_snapshot", new_callable=AsyncMock) as write,
+        ):
+            result = await refresh_feeder_snapshots(RefreshSnapshotsInput(device_id=2))
+        assert result.device_ids == [2]
+        assert write.await_args.args[0]["id"] == 2
+
+    @pytest.mark.asyncio
+    async def test_unknown_device_is_non_retryable(self):
+        with (
+            patch(f"{ACT}.refresh_data", return_value=AsyncMock()),
+            patch(f"{ACT}.get_feeders", return_value={}),
+        ):
+            with pytest.raises(ApplicationError) as exc_info:
+                await refresh_feeder_snapshots(RefreshSnapshotsInput(device_id=9))
+        assert exc_info.value.type == FEEDER_NOT_FOUND

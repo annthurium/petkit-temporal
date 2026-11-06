@@ -1,7 +1,11 @@
 # 0005. Firebase Auth with an email allowlist
 
-- Status: Proposed
+- Status: Proposed — revisit before step 4
 - Date: 2026-11-04
+
+> **Note (2026-11-06):** [0007](0007-browser-reads-through-the-api.md) keeps the
+> browser away from Firestore, which removes the main reason below for choosing
+> Firebase Auth over IAP. Reconsider IAP before implementing.
 
 ## Context
 
