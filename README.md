@@ -46,10 +46,10 @@ gcloud auth login
 gcloud config set project YOUR_PROJECT_ID
 gcloud auth application-default login   # credentials for the Python client
 gcloud services enable firestore.googleapis.com
-gcloud firestore databases create --location=us-central1
+gcloud firestore databases create --database=petkit --location=us-west1
 ```
 
-Then set `GOOGLE_CLOUD_PROJECT` in `.env`.
+Then set `GOOGLE_CLOUD_PROJECT` and `FIRESTORE_DATABASE="petkit"` in `.env`. The database lives in `us-west1`, the same region as Temporal Cloud on GCP and the Cloud Run services.
 
 Firestore security rules live in `firestore.rules` and deny all client access; only the backend reads Firestore (see `docs/adr/0007`). To publish them:
 

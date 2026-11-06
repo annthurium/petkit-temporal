@@ -1,5 +1,8 @@
 {
-  "firestore": {
-    "rules": "firestore.rules"
-  }
+  "firestore": [
+    {
+      "database": "petkit",
+      "rules": "firestore.rules"
+    }
+  ]
 }

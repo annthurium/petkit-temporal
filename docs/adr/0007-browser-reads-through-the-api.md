@@ -24,10 +24,16 @@ they're not essential to the story.
   locally, the service account on Cloud Run).
 - Firestore security rules deny all client access. They're version-controlled
   in `firestore.rules`, and a test fails if they ever allow anything.
-- Development uses the real `petkit-temporal` project (Firestore Native,
-  `us-central1`), not the emulator. The emulator would have needed Java and
-  the Firebase CLI; the real project needs only `gcloud`, which deployment
-  needs anyway.
+- Development uses the real `petkit-temporal` project, not the emulator. The
+  emulator would have needed Java and the Firebase CLI; the real project needs
+  only `gcloud`, which deployment needs anyway.
+- The snapshots live in a named Firestore Native database, `petkit`, in
+  `us-west1`. Temporal Cloud on GCP is only available in `us-west1`, so the
+  Cloud Run worker and API go there too, and Firestore follows to keep
+  everything in one region. (We first created the `(default)` database in
+  `us-central1`, before knowing Temporal's region. A database's location
+  can't change, so we added a named one; snapshots are a cache, so nothing
+  needed migrating.)
 - Writes stay synchronous: the API waits for the workflow (up to 25 s), and the
   workflow refreshes the feeder's snapshot before finishing. The UI's next
   poll then sees the change. This replaces 0006's plan to make writes
@@ -50,6 +56,9 @@ they're not essential to the story.
 - **Weakens [0005](0005-firebase-auth-with-email-allowlist.md)'s main reason for
   choosing Firebase Auth over IAP** (browser reads from Firestore). Revisit 0005
   before step 4.
+- Only one database per project gets Firestore's free tier, and that's
+  `(default)`. The named `petkit` database is billed from the first operation;
+  at this app's volume that's cents per month.
 - Dashboard data can be up to `SNAPSHOT_REFRESH_MINUTES` (30) old, except right
   after an action or a manual refresh.
 - A brand-new database is empty until the first refresh. The refresh schedule
