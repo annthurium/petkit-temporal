@@ -1,0 +1,20 @@
+# Secrets and local state never go into the image.
+.env
+.env.*
+!.env.example
+temporal.db
+schedules.json
+
+# Rebuilt inside the image.
+.venv/
+venv/
+frontend/node_modules/
+frontend/dist/
+**/__pycache__/
+
+# Not needed at runtime.
+.git/
+.github/
+docs/
+tests/
+*.md

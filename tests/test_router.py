@@ -138,6 +138,7 @@ async def client(snapshot_store, mock_temporal_client):
     with (
         patch("backend.routers.feeders.get_temporal_client", return_value=mock_temporal_client),
         patch("backend.main.run_temporal_worker_with_retry", new_callable=AsyncMock),
+        patch("backend.main.ensure_refresh_schedule_with_retry", new_callable=AsyncMock),
         patch("backend.client.shutdown", new_callable=AsyncMock),
     ):
         transport = ASGITransport(app=app)

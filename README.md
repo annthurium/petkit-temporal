@@ -30,7 +30,7 @@ PETKIT_USERNAME="your-petkit-email"
 PETKIT_PASSWORD="your-petkit-password"
 PETKIT_REGION="US"
 PETKIT_TIMEZONE="America/Los_Angeles"
-TEMPORAL_HOST="localhost:7233"
+TEMPORAL_ADDRESS="localhost:7233"
 TEMPORAL_NAMESPACE="default"
 TEMPORAL_TASK_QUEUE="petkit-tasks"
 # Optional: skip a scheduled feed if the feeder dispensed food within this many hours
@@ -115,6 +115,10 @@ uv run python -m backend.temporal.migrate_to_schedules --apply
 ```
 
 The frontend runs at `http://localhost:5173` and proxies API requests to the backend at `http://localhost:8000`.
+
+## Deploying to Cloud Run
+
+See [docs/deploy.md](docs/deploy.md). In short: one container image; the API runs as a Cloud Run service and the Temporal worker as a Cloud Run worker pool that Temporal Cloud scales from zero (Serverless Workers).
 
 ## Tests
 

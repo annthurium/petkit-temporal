@@ -1,7 +1,11 @@
 # 0001. Deploy to Cloud Run with Temporal Serverless Workers
 
-- Status: Proposed
+- Status: Accepted (2026-11-06; details in [0008](0008-one-image-api-service-and-serverless-worker-pool.md))
 - Date: 2026-11-04
+
+> **Update (2026-11-06):** Serverless Workers for Cloud Run are now in public
+> preview with no access request, Python is supported (SDK 1.35+), and Temporal
+> Cloud on GCP runs in `us-west1`, so everything deploys there.
 
 ## Context
 
