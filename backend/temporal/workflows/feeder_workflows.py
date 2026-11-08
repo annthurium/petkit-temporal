@@ -8,6 +8,7 @@ from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from backend.temporal.activities.feeder_activities import (
+        FEED_REJECTED,
         FEEDER_NOT_FOUND,
         UNKNOWN_COMMAND,
         DeviceCommandInput,
@@ -61,8 +62,21 @@ DEVICE_COMMAND_RETRY_POLICY = RetryPolicy(
     non_retryable_error_types=[FEEDER_NOT_FOUND, UNKNOWN_COMMAND],
 )
 
-# How many times to send the feed command if verification can't confirm it.
+# How many times to send the feed command. A second send happens ONLY when
+# PetKit explicitly rejected the first one (e.g. "Device is offline"), so we
+# know nothing was dispensed. Once PetKit accepts a command (or the outcome is
+# unknown), we never send it again: the feed log can miss real feeds, and a
+# re-send would double-feed (ADR 0009).
 MAX_FEED_ATTEMPTS = 2
+
+# Wait before re-sending a rejected command, giving a briefly offline feeder
+# a chance to reconnect.
+REJECTED_RETRY_DELAY = timedelta(seconds=30)
+
+UNCONFIRMED_MESSAGE = (
+    "Feed sent but the feeder never confirmed it. "
+    "Check the feeder before feeding again."
+)
 
 ACTIVITY_TIMEOUT = timedelta(seconds=30)
 
@@ -106,6 +120,11 @@ def _failure_message(err: ActivityError) -> str:
 
 def _is_feeder_not_found(err: ActivityError) -> bool:
     return isinstance(err.cause, ApplicationError) and err.cause.type == FEEDER_NOT_FOUND
+
+
+def _is_rejected(err: ActivityError) -> bool:
+    """PetKit answered the feed command with an explicit error: nothing dispensed."""
+    return isinstance(err.cause, ApplicationError) and err.cause.type == FEED_REJECTED
 
 
 async def _refresh_snapshot(device_id: int | None) -> RefreshSnapshotsResult:
@@ -169,7 +188,7 @@ class FeedWorkflow:
             amount1=input.amount1,
             amount2=input.amount2,
         )
-        failure_reason = "Feed not confirmed by device"
+        failure_reason = UNCONFIRMED_MESSAGE
         attempt = 0
 
         while attempt < MAX_FEED_ATTEMPTS:
@@ -190,11 +209,22 @@ class FeedWorkflow:
                 if _is_feeder_not_found(e):
                     failure_reason = trigger_error
                     break
-                # Other failures are ambiguous: a timeout may have happened
-                # after PetKit accepted the command. The feed log decides.
+                if _is_rejected(e):
+                    # PetKit said no, so nothing was dispensed: safe to try again.
+                    failure_reason = trigger_error
+                    workflow.logger.warning(
+                        f"PetKit rejected feed for device {input.device_id}: {trigger_error}"
+                    )
+                    if attempt < MAX_FEED_ATTEMPTS:
+                        await asyncio.sleep(REJECTED_RETRY_DELAY.total_seconds())
+                        continue
+                    break
+                # Anything else (timeout, network, worker stopped) is ambiguous:
+                # PetKit may have accepted the command. Check the feed log, but
+                # never send again.
                 workflow.logger.warning(
-                    f"trigger_feed failed for device {input.device_id}: {trigger_error}; "
-                    "checking feed log before deciding"
+                    f"trigger_feed outcome unknown for device {input.device_id}: "
+                    f"{trigger_error}; checking feed log"
                 )
 
             await asyncio.sleep(VERIFY_INITIAL_DELAY.total_seconds())
@@ -219,9 +249,14 @@ class FeedWorkflow:
                     attempts=attempt,
                 )
             except ActivityError as e:
-                failure_reason = trigger_error or _failure_message(e)
                 if _is_feeder_not_found(e):
-                    break
+                    failure_reason = _failure_message(e)
+                elif trigger_error:
+                    failure_reason = f"{trigger_error}. {UNCONFIRMED_MESSAGE}"
+                else:
+                    failure_reason = UNCONFIRMED_MESSAGE
+                # The command may have dispensed food. Alert; don't send again.
+                break
 
         # Compensation: let the user know the pet may not have been fed.
         alert = await workflow.execute_activity(

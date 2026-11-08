@@ -97,8 +97,8 @@ The Temporal web UI is available at `http://localhost:8233` for inspecting workf
   1. *(scheduled only)* skip if the feeder dispensed food in the last `FEED_SKIP_WINDOW_HOURS`
   2. send the feed command (never retried automatically, since a retry could dispense twice)
   3. poll the device's feed log until the feed shows up (Temporal activity retries do the polling)
-  4. if it isn't confirmed, send the command once more and verify again
-  5. if it's still unconfirmed, raise an alert
+  4. if it isn't confirmed, raise an alert; never send it again, because PetKit's feed log can miss real feeds (ADR 0009)
+  5. the only re-send: if PetKit explicitly *rejected* the command (e.g. device offline), wait 30s and try once more
 - **Manual feeds** use a fixed workflow ID per device, so a double-click can't start two feeds at once.
 - **Device commands** (settings, desiccant reset, food replenished) run as a `DeviceCommandWorkflow` with normal retries. The API waits up to 25s for the result.
 - **Device data** (status, settings, feed history) is read from Firestore snapshots, never from PetKit directly. The worker writes a snapshot after every feed and command, on Refresh, and every 30 minutes (`feeder-snapshot-refresh` schedule). Only Temporal activities talk to PetKit.

@@ -1,6 +1,6 @@
 # 0003. Send feeds at most once; verify by polling through activity retries
 
-- Status: Accepted
+- Status: Accepted; re-send rule superseded by [0009](0009-never-resend-an-accepted-feed.md)
 - Date: 2026-11-05
 - Implemented in: `816c6fa`
 

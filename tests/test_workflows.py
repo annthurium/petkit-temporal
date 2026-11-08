@@ -37,6 +37,8 @@ from backend.temporal.activities.feeder_activities import (
     verify_feed,
 )
 from backend.temporal.workflows.feeder_workflows import (
+    REJECTED_RETRY_DELAY,
+    UNCONFIRMED_MESSAGE,
     RefreshFeedersWorkflow,
     DEVICE_COMMAND_RETRY_POLICY,
     DeviceCommandWorkflow,
@@ -446,29 +448,73 @@ class TestFeedWorkflow:
         assert fake.names() == ["check_recent_feed", "trigger_feed", "verify_feed", "refresh_feeder_snapshots"]
 
     @pytest.mark.asyncio
-    async def test_unconfirmed_feed_retries_trigger_once_then_succeeds(self):
+    async def test_accepted_but_unconfirmed_alerts_and_never_resends(self):
+        """Regression (2026-11-08): PetKit accepted the command and the feeder
+        dispensed, but the feed never appeared in the log. Re-sending fed twice.
+        Now: alert, never send again (ADR 0009)."""
         fake = _FakeActivities(
-            trigger_feed=[{"status": "ok"}, {"status": "ok"}],
-            verify_feed=[_not_yet_recorded(), VERIFIED],
-        )
-        result = await _run(FeedInput(device_id=100, amount=5), fake)
-        assert result.status == "success"
-        assert result.attempts == 2
-        assert fake.names() == ["trigger_feed", "verify_feed", "trigger_feed", "verify_feed", "refresh_feeder_snapshots"]
-
-    @pytest.mark.asyncio
-    async def test_gives_up_and_alerts_after_max_attempts(self):
-        fake = _FakeActivities(
-            trigger_feed=[{"status": "ok"}] * MAX_FEED_ATTEMPTS,
-            verify_feed=[_not_yet_recorded()] * MAX_FEED_ATTEMPTS,
+            trigger_feed=[{"status": "ok"}],
+            verify_feed=[_not_yet_recorded()],
             alert_feed_failure=[ALERT],
         )
         result = await _run(FeedInput(device_id=100, amount=5), fake)
         assert result.status == "failure"
+        assert result.message == UNCONFIRMED_MESSAGE
+        assert fake.names().count("trigger_feed") == 1
+        assert fake.names() == ["trigger_feed", "verify_feed", "alert_feed_failure", "refresh_feeder_snapshots"]
+
+    @pytest.mark.asyncio
+    async def test_timeout_then_unconfirmed_alerts_and_never_resends(self):
+        timeout = _activity_error(TimeoutError("timed out", type=TimeoutType.START_TO_CLOSE, last_heartbeat_details=[]))
+        fake = _FakeActivities(
+            trigger_feed=[timeout],
+            verify_feed=[_not_yet_recorded()],
+            alert_feed_failure=[ALERT],
+        )
+        result = await _run(FeedInput(device_id=100, amount=5), fake)
+        assert result.status == "failure"
+        assert UNCONFIRMED_MESSAGE in result.message
+        assert fake.names().count("trigger_feed") == 1
+
+    @pytest.mark.asyncio
+    async def test_rejected_command_is_resent_after_delay(self):
+        """An explicit PetKit rejection means nothing dispensed, so retrying is safe."""
+        rejected = _activity_error(ApplicationError("Device is offline", type=FEED_REJECTED))
+        fake = _FakeActivities(
+            trigger_feed=[rejected, {"status": "ok"}],
+            verify_feed=[VERIFIED],
+        )
+        sleeps = []
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        with patch("asyncio.sleep", side_effect=fake_sleep):
+            async def execute_activity(fn, arg, **kwargs):
+                return await fake(fn, arg, **kwargs)
+
+            with (
+                patch.object(workflow, "now", return_value=datetime(2025, 1, 15, 15, 0, tzinfo=timezone.utc)),
+                patch.object(workflow, "logger", MagicMock()),
+                patch.object(workflow, "execute_activity", side_effect=execute_activity),
+            ):
+                result = await FeedWorkflow().run(FeedInput(device_id=100, amount=5))
+
+        assert result.status == "success"
+        assert result.attempts == 2
+        # No feed-log check after a rejection: nothing was dispensed.
+        assert fake.names() == ["trigger_feed", "trigger_feed", "verify_feed", "refresh_feeder_snapshots"]
+        assert sleeps[0] == REJECTED_RETRY_DELAY.total_seconds()
+
+    @pytest.mark.asyncio
+    async def test_rejected_twice_alerts_with_petkit_message(self):
+        rejected = _activity_error(ApplicationError("Device is offline", type=FEED_REJECTED))
+        fake = _FakeActivities(trigger_feed=[rejected, rejected], alert_feed_failure=[ALERT])
+        result = await _run(FeedInput(device_id=100, amount=5), fake)
+        assert result.status == "failure"
+        assert result.message == "Device is offline"
         assert result.attempts == MAX_FEED_ATTEMPTS
-        assert result.message == "Feed not yet recorded by device"
-        assert fake.names()[-2:] == ["alert_feed_failure", "refresh_feeder_snapshots"]
-        assert fake.names().count("trigger_feed") == MAX_FEED_ATTEMPTS
+        assert fake.names() == ["trigger_feed", "trigger_feed", "alert_feed_failure", "refresh_feeder_snapshots"]
 
     @pytest.mark.asyncio
     async def test_trigger_timeout_still_verifies_before_retrying(self):
@@ -478,20 +524,6 @@ class TestFeedWorkflow:
         result = await _run(FeedInput(device_id=100, amount=5), fake)
         assert result.status == "success"
         assert fake.names() == ["trigger_feed", "verify_feed", "refresh_feeder_snapshots"]  # no second trigger
-
-    @pytest.mark.asyncio
-    async def test_rejected_trigger_reports_petkit_error(self):
-        rejected = _activity_error(ApplicationError("Device is offline", type=FEED_REJECTED))
-        fake = _FakeActivities(
-            trigger_feed=[rejected, rejected],
-            verify_feed=[_not_yet_recorded(), _not_yet_recorded()],
-            alert_feed_failure=[ALERT],
-        )
-        result = await _run(FeedInput(device_id=100, amount=5), fake)
-        assert result.status == "failure"
-        assert result.message == "Device is offline"
-        alert_call = next(c for c in fake.calls if c[0] == "alert_feed_failure")
-        assert alert_call[1].reason == "Device is offline"
 
     @pytest.mark.asyncio
     async def test_feeder_not_found_alerts_without_verifying(self):
