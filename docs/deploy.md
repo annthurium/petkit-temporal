@@ -24,7 +24,9 @@ Everything lives in `us-west1`, the GCP region Temporal Cloud uses.
 - **gcloud** with a Python that has `grpcio` (the worker-pool commands need it).
   If `gcloud run worker-pools --help` fails with `No module named 'grpc'`:
   ```bash
-  python3 -m venv ~/.gcloud-python
+  # gcloud needs Python 3.10+; macOS's built-in python3 is 3.9, so name one
+  # explicitly (e.g. Homebrew's python3.12)
+  /opt/homebrew/bin/python3.12 -m venv ~/.gcloud-python
   ~/.gcloud-python/bin/pip install grpcio
   # add to your shell profile:
   export CLOUDSDK_PYTHON=~/.gcloud-python/bin/python
