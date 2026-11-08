@@ -21,7 +21,22 @@ step "Enabling APIs"
 run "$GCLOUD" services enable \
   run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com \
   secretmanager.googleapis.com firestore.googleapis.com iam.googleapis.com \
+  iap.googleapis.com \
   --project "$P"
+
+step "IAP service agent"
+# IAP calls the private API service as this Google-managed account
+# (service-<project-number>@gcp-sa-iap.iam.gserviceaccount.com). Create it now
+# so deploy.sh can grant it run.invoker. Uses the REST API because the gcloud
+# equivalent needs the beta component. Idempotent.
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "+ POST serviceusage.googleapis.com/v1beta1/projects/$P/services/iap.googleapis.com:generateServiceIdentity" >&2
+else
+  curl -sS -X POST -H "Authorization: Bearer $("$GCLOUD" auth print-access-token)" \
+    -H "x-goog-user-project: $P" -H "Content-Length: 0" \
+    "https://serviceusage.googleapis.com/v1beta1/projects/$P/services/iap.googleapis.com:generateServiceIdentity" \
+    | grep -o '"email": *"[^"]*"' || { echo "Could not create the IAP service agent" >&2; exit 1; }
+fi
 
 step "Artifact Registry repository '$AR_REPO' ($REGION)"
 if "$GCLOUD" artifacts repositories describe "$AR_REPO" --location "$REGION" --project "$P" >/dev/null 2>&1; then

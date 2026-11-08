@@ -118,7 +118,7 @@ The frontend runs at `http://localhost:5173` and proxies API requests to the bac
 
 ## Deploying to Cloud Run
 
-See [docs/deploy.md](docs/deploy.md). In short: one container image; the API runs as a Cloud Run service and the Temporal worker as a Cloud Run worker pool that Temporal Cloud scales from zero (Serverless Workers).
+See [docs/deploy.md](docs/deploy.md). In short: one container image; the API runs as a Cloud Run service behind Identity-Aware Proxy (Google sign-in), and the Temporal worker as a Cloud Run worker pool that Temporal Cloud scales from zero (Serverless Workers).
 
 ## Tests
 

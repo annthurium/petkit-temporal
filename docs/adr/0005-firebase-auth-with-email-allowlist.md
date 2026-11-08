@@ -1,6 +1,6 @@
 # 0005. Firebase Auth with an email allowlist
 
-- Status: Proposed — revisit before step 4
+- Status: Superseded by [0010](0010-identity-aware-proxy-for-access.md) (IAP)
 - Date: 2026-11-04
 
 > **Note (2026-11-06):** [0007](0007-browser-reads-through-the-api.md) keeps the

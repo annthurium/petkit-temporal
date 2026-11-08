@@ -1,6 +1,26 @@
 import axios from 'axios';
 
-const api = axios.create({ baseURL: '/api' });
+// In production the app sits behind Identity-Aware Proxy (ADR 0010). When the
+// IAP session expires, IAP answers script requests that carry this header with
+// 401 instead of a redirect to Google sign-in (which fetch can't follow).
+const api = axios.create({
+  baseURL: '/api',
+  headers: { 'X-Requested-With': 'XMLHttpRequest' },
+});
+
+// On 401, reload the page so IAP can run the normal sign-in redirect.
+// Rate-limited so a persistent 401 (e.g. no access) can't cause a reload loop.
+const IAP_RELOAD_KEY = 'iap-reauth-at';
+api.interceptors.response.use(undefined, (error) => {
+  if (axios.isAxiosError(error) && error.response?.status === 401) {
+    const last = Number(sessionStorage.getItem(IAP_RELOAD_KEY) ?? 0);
+    if (Date.now() - last > 60_000) {
+      sessionStorage.setItem(IAP_RELOAD_KEY, String(Date.now()));
+      window.location.reload();
+    }
+  }
+  return Promise.reject(error);
+});
 
 export interface FeederState {
   battery_power: number | null;

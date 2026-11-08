@@ -7,7 +7,8 @@
 #
 # Each deploy:
 #   1. builds one image (Cloud Build), tagged with the build ID (git commit)
-#   2. deploys the API as a Cloud Run service (private: IAM-authenticated only)
+#   2. deploys the API as a Cloud Run service behind Identity-Aware Proxy:
+#      visitors sign in with Google; only IAP_ALLOWED_MEMBERS get through
 #   3. creates a NEW worker pool for this build ID, starting at 0 instances
 #   4. registers the build as a Temporal Worker Deployment Version that
 #      Temporal Cloud scales (max 1 instance: PetKit allows one session)
@@ -24,6 +25,9 @@ P="$GOOGLE_CLOUD_PROJECT"
 TEMPORAL_TASK_QUEUE="${TEMPORAL_TASK_QUEUE:-petkit-tasks}"
 PETKIT_REGION="${PETKIT_REGION:-US}"
 FEED_SKIP_WINDOW_HOURS="${FEED_SKIP_WINDOW_HOURS:-12}"
+# Who may use the app through IAP: comma-separated IAM members, e.g.
+# "user:me@example.com,group:family@example.com". Defaults to your gcloud account.
+IAP_ALLOWED_MEMBERS="${IAP_ALLOWED_MEMBERS:-user:$("$GCLOUD" config get-value account 2>/dev/null)}"
 
 # --- Build ID: the commit being deployed ------------------------------------
 BUILD_ID="$(git rev-parse --short=7 HEAD)"
@@ -51,10 +55,26 @@ step "2/5 Deploy API service '$API_SERVICE'"
 run "$GCLOUD" run deploy "$API_SERVICE" \
   --image "$IMAGE" --region "$REGION" --project "$P" \
   --service-account "$(sa_email "$API_SA_NAME")" \
-  --no-allow-unauthenticated \
+  --no-allow-unauthenticated --iap \
   --min-instances 0 --max-instances 2 \
   --set-env-vars "${COMMON_ENV},PETKIT_ROLE=api,RUN_EMBEDDED_WORKER=false" \
   --set-secrets "TEMPORAL_API_KEY=temporal-api-key:latest"
+
+step "2b. Identity-Aware Proxy access"
+PROJECT_NUMBER="$("$GCLOUD" projects describe "$P" --format='value(projectNumber)')"
+# IAP invokes the private service as its service agent (ADR 0010).
+run "$GCLOUD" run services add-iam-policy-binding "$API_SERVICE" \
+  --region "$REGION" --project "$P" \
+  --member "serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-iap.iam.gserviceaccount.com" \
+  --role roles/run.invoker >/dev/null
+echo "IAP service agent can invoke $API_SERVICE"
+IFS=',' read -r -a members <<< "$IAP_ALLOWED_MEMBERS"
+for member in "${members[@]}"; do
+  run "$GCLOUD" iap web add-iam-policy-binding \
+    --resource-type cloud-run --service "$API_SERVICE" --region "$REGION" --project "$P" \
+    --member "$member" --role roles/iap.httpsResourceAccessor >/dev/null
+  echo "IAP access: $member"
+done
 
 step "3/5 Create worker pool '$WORKER_POOL' (0 instances; Temporal scales it)"
 run "$GCLOUD" run worker-pools deploy "$WORKER_POOL" \
@@ -87,10 +107,10 @@ run "$TEMPORAL_CLI" worker deployment set-current-version \
   --deployment-name "$WORKER_DEPLOYMENT_NAME" --build-id "$BUILD_ID" --yes
 
 step "Deployed $BUILD_ID"
+API_URL="$("$GCLOUD" run services describe "$API_SERVICE" --region "$REGION" --project "$P" --format='value(status.url)' 2>/dev/null || true)"
 cat <<EOF
-Open the app (authenticates with your gcloud credentials):
-  $GCLOUD run services proxy $API_SERVICE --region $REGION --project $P --port 8080
-  then browse to http://localhost:8080
+Open the app (Google sign-in via IAP; allowed: $IAP_ALLOWED_MEMBERS):
+  ${API_URL:-https://<service-url>}
 
 Watch the worker pool scale (0 when idle):
   $GCLOUD run worker-pools describe $WORKER_POOL --region $REGION --project $P

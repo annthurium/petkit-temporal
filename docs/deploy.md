@@ -4,7 +4,7 @@ Architecture: [ADR 0001](adr/0001-deploy-to-cloud-run-with-serverless-workers.md
 [ADR 0008](adr/0008-one-image-api-service-and-serverless-worker-pool.md).
 
 ```
-Browser ──(gcloud run services proxy)──► petkit-api        Cloud Run service, scales to 0
+Browser ──(Google sign-in, IAP)──► petkit-api            Cloud Run service, scales to 0
                                             │  Temporal + Firestore only, no PetKit
                                             ▼
                                      Temporal Cloud (us-west1)
@@ -86,13 +86,26 @@ and makes it current.
 
 ## 4. Open the app
 
-The API service is private (IAM only). Proxy it with your gcloud credentials:
+The service sits behind Identity-Aware Proxy ([ADR 0010](adr/0010-identity-aware-proxy-for-access.md)).
+Open the URL `deploy.sh` prints (or `gcloud run services describe petkit-api
+--region us-west1 --format='value(status.url)'`) and sign in with Google.
+Only the accounts in `IAP_ALLOWED_MEMBERS` get through; everyone else sees an
+access-denied page.
+
+To give someone else access, add them to `IAP_ALLOWED_MEMBERS` and redeploy,
+or grant it directly:
 
 ```bash
-gcloud run services proxy petkit-api --region us-west1 --port 8080
+gcloud iap web add-iam-policy-binding --resource-type cloud-run \
+  --service petkit-api --region us-west1 \
+  --member user:someone@your-domain.com --role roles/iap.httpsResourceAccessor
 ```
 
-Then browse to <http://localhost:8080>. On first use:
+They must be in the project's Workspace organization; outside users need a
+custom OAuth client (see ADR 0010). `gcloud run services proxy` no longer works,
+because IAP is enforced before IAM.
+
+On first use:
 1. Click **Load feeders from PetKit** if the list is empty.
 2. Set the feeding schedule again. Schedules live in the Temporal namespace,
    and this is a new namespace.
